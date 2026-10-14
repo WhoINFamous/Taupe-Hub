@@ -1,0 +1,2792 @@
+--[[
+    ████████╗ █████╗ ██╗   ██╗██████╗ ███████╗
+    ╚══██╔══╝██╔══██╗██║   ██║██╔══██╗██╔════╝
+       ██║   ███████║██║   ██║██████╔╝█████╗
+       ██║   ██╔══██║██║   ██║██╔═══╝ ██╔══╝
+       ██║   ██║  ██║╚██████╔╝██║     ███████╗
+       ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚══════╝
+    TAUPE HUB · Dandy's World                      v1.0.0
+
+    · Tecla para mostrar/ocultar: RightShift (configurable)
+    · Tecla de pánico: End (apaga toda la automatización)
+    · Si algo no detecta bien la estructura del juego tras una
+      actualización, usa  Config > "Escanear juego"  y revisa la consola (F9).
+
+    El script es adaptativo: busca carpetas/valores por nombre con varios
+    fallbacks (CurrentRoom/Generators/Monsters/Items, Stats.Completed, etc.)
+]]
+
+local VERSION = "1.0.0"
+local ENV = (getgenv and getgenv()) or _G
+if ENV.TaupeHub and ENV.TaupeHub.Unload then pcall(ENV.TaupeHub.Unload) end
+
+---------------------------------------------------------------------------
+-- Servicios
+---------------------------------------------------------------------------
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting          = game:GetService("Lighting")
+local HttpService       = game:GetService("HttpService")
+local CoreGui           = game:GetService("CoreGui")
+local GuiService        = game:GetService("GuiService")
+local TeleportService   = game:GetService("TeleportService")
+local VirtualUser       = game:GetService("VirtualUser")
+local VIM do
+    local ok, s = pcall(function() return game:GetService("VirtualInputManager") end)
+    if ok then VIM = s end
+end
+
+local LP = Players.LocalPlayer
+local lower, floor, abs = string.lower, math.floor, math.abs
+
+-- Funciones del executor (pueden no existir)
+local X = {
+    fireprompt     = fireproximityprompt,
+    firetouch      = firetouchinterest,
+    firesignal     = firesignal,
+    getconnections = getconnections or get_signal_cons,
+    hookmm         = hookmetamethod,
+    getncm         = getnamecallmethod,
+    checkcaller    = checkcaller,
+    newcc          = newcclosure,
+    gethui         = gethui or get_hidden_gui,
+    setclipboard   = setclipboard or toclipboard,
+    writefile      = writefile,
+    readfile       = readfile,
+    isfile         = isfile,
+    makefolder     = makefolder,
+    isfolder       = isfolder,
+}
+
+local Hub = { Alive = true }
+ENV.TaupeHub = Hub
+local Conns = {}
+local function bind(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(Conns, c)
+    return c
+end
+
+---------------------------------------------------------------------------
+-- Flags / configuración por defecto
+---------------------------------------------------------------------------
+local ITEM_NAMES = {
+    "Bandage", "Healthkit", "Speed Candy", "Stealth Candy", "Skill Check Candy",
+    "Protein Bar", "Bottle o' Pop", "Box o' Chocolates", "Jumper Cable",
+    "Air Horn", "Smoke Bomb", "Enigma Candy", "Jawbreaker", "Gumballs",
+    "Eject Button", "Veemote", "Research Capsule", "Ichor", "Tape",
+}
+
+local F = {
+    -- Farm
+    AutoFarm = false, FarmPos = "Bajo el suelo", FarmDepth = 7, FarmRoute = "Abajo",
+    FarmPriority = "Inteligente", TweenSpeed = 38, SkyHeight = 28,
+    FarmEvade = true, EvadeRadius = 20, SkipOccupied = true, GenTimeout = 120,
+    FarmItems = true, ItemDetour = 30, FarmElevator = true,
+    AutoSkillCheck = true, SCMode = "Visual", SCPerfect = true, SCLead = 0.03,
+    SCKey = "Space", SCButtons = UserInputService.TouchEnabled, SCAngleTol = 14, SCInstantDelay = 0.05,
+    -- Supervivencia
+    AutoHide = false, HideMode = "Bajo el suelo", DangerRadius = 24, HideDepth = 12,
+    AutoHeal = true, HealThreshold = 99, HealDelay = 0.25, HealPriority = "Inteligente",
+    ItemUse = "Tecla de slot",
+    AutoDistract = false, DistractTrigger = "Aliado en peligro", DistractHeight = 11,
+    DistractRadius = 9, DistractHeightRanged = 7, DistractRadiusRanged = 26,
+    DistractOrbit = 1.6, RangedNames = "goob, scraps",
+    SmartVeemote = false, VeemoteMode = "Apuntar cámara", VeemoteMinHeat = 3,
+    VeemoteCooldown = 6, HeatRadius = 35,
+    ItemAura = false, AuraRadius = 18,
+    AutoBuy = false, BuyList = { "Bandage", "Healthkit" }, BuyAmount = 1, BuyRemote = false,
+    -- Toon
+    AutoAbility = false, AbilityKey = "Q", AbilityMode = "En peligro", AbilityInterval = 1.5,
+    MasteryFarm = false, AutoQueue = false,
+    -- Visual
+    ESPTwisted = true, ESPGens = true, ESPItems = false, ESPPlayers = false,
+    ESPHighlight = true, ESPDistance = true, ESPMaxDist = 1500, ESPHeat = true,
+    Fullbright = false, NoFog = false, FOVOn = false, FOV = 80,
+    -- Alertas
+    NotifyFloor = true, NotifyTwisted = true, NotifyItems = true,
+    RareItems = { "Research Capsule", "Ichor", "Veemote", "Healthkit" },
+    NotifyAllyHurt = true, NotifyAllyStamina = true, StaminaThreshold = 25,
+    NotifySelfHurt = true,
+    -- Jugador
+    WalkSpeedOn = false, WalkSpeed = 24, SpeedBoost = false, SpeedMult = 1.3,
+    TPWalk = false, TPWalkSpeed = 22, Noclip = false, Fly = false, FlySpeed = 45,
+    InfStamina = false, ClickTP = false,
+    -- Misc
+    AntiAFK = true, ToggleKey = "RightShift", PanicKey = "End", AutoLoad = true, Debug = false,
+}
+
+---------------------------------------------------------------------------
+-- Utilidades
+---------------------------------------------------------------------------
+local function norm(s) return (lower(tostring(s)):gsub("[^%w]", "")) end
+
+local function hasAny(name, list)
+    local n = norm(name)
+    for _, k in ipairs(list) do
+        local nk = norm(k)
+        if nk ~= "" and n:find(nk, 1, true) then return true end
+    end
+    return false
+end
+
+local function splitList(s)
+    local t = {}
+    for part in tostring(s):gmatch("[^,]+") do
+        local p = part:gsub("^%s+", ""):gsub("%s+$", "")
+        if p ~= "" then t[#t + 1] = p end
+    end
+    return t
+end
+
+local function getChar() return LP.Character end
+local function getHRP() local c = LP.Character return c and c:FindFirstChild("HumanoidRootPart") end
+local function getHum() local c = LP.Character return c and c:FindFirstChildOfClass("Humanoid") end
+
+local function partOf(inst)
+    if not inst then return nil end
+    if inst:IsA("BasePart") then return inst end
+    if inst:IsA("Model") then
+        return inst.PrimaryPart or inst:FindFirstChild("HumanoidRootPart") or inst:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return inst:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function posOf(inst)
+    if not inst then return nil end
+    if inst:IsA("BasePart") then return inst.Position end
+    if inst:IsA("Model") then
+        local p = inst.PrimaryPart or inst:FindFirstChild("HumanoidRootPart")
+        if p then return p.Position end
+        local ok, cf = pcall(inst.GetPivot, inst)
+        if ok and cf then return cf.Position end
+    end
+    local p = inst:FindFirstChildWhichIsA("BasePart", true)
+    return p and p.Position
+end
+
+-- Busca un valor por nombre en atributos / ValueBase dentro de las raíces dadas
+local function findVal(roots, names)
+    for _, root in ipairs(roots) do
+        if root then
+            for _, n in ipairs(names) do
+                local a = root:GetAttribute(n)
+                if a ~= nil then return a end
+                local v = root:FindFirstChild(n)
+                if v and v:IsA("ValueBase") then return v.Value end
+            end
+        end
+    end
+    return nil
+end
+
+local function statRoots(inst)
+    if not inst then return {} end
+    return { inst, inst:FindFirstChild("Stats"), inst:FindFirstChild("Values"), inst:FindFirstChild("Data") }
+end
+
+local SLOT_KEYS = {
+    Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four,
+    Enum.KeyCode.Five, Enum.KeyCode.Six, Enum.KeyCode.Seven, Enum.KeyCode.Eight,
+}
+
+local function keyFromName(name)
+    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
+    return ok and kc or nil
+end
+
+local function pressKey(kc)
+    if not VIM or not kc then return end
+    task.spawn(function()
+        pcall(function() VIM:SendKeyEvent(true, kc, false, game) end)
+        task.wait(0.03)
+        pcall(function() VIM:SendKeyEvent(false, kc, false, game) end)
+    end)
+end
+
+local function clickAt(x, y)
+    if not VIM then return end
+    pcall(function()
+        VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    end)
+end
+
+local function clickGui(b)
+    if X.getconnections then
+        for _, sn in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down", "MouseButton1Up" }) do
+            local ok, cs = pcall(function() return X.getconnections(b[sn]) end)
+            if ok and cs and #cs > 0 then
+                for _, c in ipairs(cs) do pcall(function() c:Fire() end) end
+                return true
+            end
+        end
+    end
+    if X.firesignal and pcall(X.firesignal, b.MouseButton1Click) then return true end
+    local inset = GuiService:GetGuiInset()
+    local p = b.AbsolutePosition + b.AbsoluteSize / 2 + inset
+    clickAt(p.X, p.Y)
+    return true
+end
+
+local function usePrompt(pr)
+    if not pr then return end
+    task.spawn(function()
+        if X.fireprompt then
+            local ok = pcall(X.fireprompt, pr)
+            if ok then return end
+        end
+        pcall(function()
+            pr:InputHoldBegin()
+            task.wait((pr.HoldDuration or 0) + 0.06)
+            pr:InputHoldEnd()
+        end)
+    end)
+end
+
+local function isShown(g)
+    local x = g
+    while x and x:IsA("GuiObject") do
+        if not x.Visible then return false end
+        x = x.Parent
+    end
+    if x and x:IsA("LayerCollector") then return x.Enabled end
+    return x ~= nil
+end
+
+---------------------------------------------------------------------------
+-- Tema / GUI base
+---------------------------------------------------------------------------
+local Theme = {
+    Bg        = Color3.fromRGB(23, 23, 22),
+    Side      = Color3.fromRGB(28, 28, 26),
+    Panel     = Color3.fromRGB(32, 32, 30),
+    Elem      = Color3.fromRGB(40, 39, 37),
+    ElemHover = Color3.fromRGB(48, 47, 44),
+    Stroke    = Color3.fromRGB(56, 55, 51),
+    Text      = Color3.fromRGB(221, 217, 207),
+    Sub       = Color3.fromRGB(138, 134, 124),
+    Accent    = Color3.fromRGB(184, 172, 146),
+    AccentDim = Color3.fromRGB(118, 110, 94),
+    Off       = Color3.fromRGB(60, 59, 55),
+    Good      = Color3.fromRGB(141, 153, 112),
+    Bad       = Color3.fromRGB(184, 96, 76),
+    -- ESP
+    EspMon    = Color3.fromRGB(198, 94, 72),
+    EspGen    = Color3.fromRGB(205, 182, 128),
+    EspDone   = Color3.fromRGB(126, 146, 104),
+    EspItem   = Color3.fromRGB(150, 172, 182),
+    EspRare   = Color3.fromRGB(226, 196, 118),
+    EspPlayer = Color3.fromRGB(172, 162, 198),
+}
+local FONT, FONT_M, FONT_B = Enum.Font.Gotham, Enum.Font.GothamMedium, Enum.Font.GothamBold
+
+local function create(class, props)
+    local parent = props.Parent
+    props.Parent = nil
+    local o = Instance.new(class)
+    for k, v in pairs(props) do o[k] = v end
+    if parent then o.Parent = parent end
+    return o
+end
+local function corner(o, r) return create("UICorner", { CornerRadius = UDim.new(0, r or 6), Parent = o }) end
+local function stroke(o, c, t)
+    return create("UIStroke", { Color = c or Theme.Stroke, Thickness = t or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = o })
+end
+local function pad(o, l, r, t, b)
+    return create("UIPadding", { PaddingLeft = UDim.new(0, l), PaddingRight = UDim.new(0, r), PaddingTop = UDim.new(0, t), PaddingBottom = UDim.new(0, b), Parent = o })
+end
+local function tw(o, t, props)
+    local x = TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props)
+    x:Play()
+    return x
+end
+
+local Gui = create("ScreenGui", {
+    Name = "TH_" .. tostring(math.random(100000, 999999)), ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true, DisplayOrder = 999,
+})
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(Gui) end end)
+local guiParentOk = pcall(function() Gui.Parent = (X.gethui and X.gethui()) or CoreGui end)
+if not guiParentOk or not Gui.Parent then Gui.Parent = LP:WaitForChild("PlayerGui") end
+
+local EspFolder = Instance.new("Folder")
+EspFolder.Name = "TH_ESP"
+EspFolder.Parent = Gui.Parent
+
+---------------------------------------------------------------------------
+-- Notificaciones (toasts)
+---------------------------------------------------------------------------
+local NotifHolder = create("Frame", {
+    AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -16, 1, -16),
+    Size = UDim2.fromOffset(290, 420), BackgroundTransparency = 1, Parent = Gui,
+})
+create("UIListLayout", {
+    Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Bottom,
+    SortOrder = Enum.SortOrder.LayoutOrder, Parent = NotifHolder,
+})
+local notifCount = 0
+
+local function notify(title, text, kind, dur)
+    if not Hub.Alive then return end
+    notifCount = notifCount + 1
+    local col = (kind == "bad" and Theme.Bad) or (kind == "good" and Theme.Good) or Theme.Accent
+    local n = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = Theme.Panel, BackgroundTransparency = 1, BorderSizePixel = 0,
+        LayoutOrder = notifCount, Parent = NotifHolder,
+    })
+    corner(n, 6)
+    local st = stroke(n)
+    st.Transparency = 1
+    local bar = create("Frame", {
+        Size = UDim2.new(0, 3, 1, -14), Position = UDim2.new(0, 6, 0, 7), BackgroundColor3 = col,
+        BackgroundTransparency = 1, BorderSizePixel = 0, Parent = n,
+    })
+    corner(bar, 2)
+    local body = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = n,
+    })
+    pad(body, 16, 10, 8, 9)
+    create("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = body })
+    local t1 = create("TextLabel", {
+        Text = tostring(title), Font = FONT_B, TextSize = 13, TextColor3 = Theme.Text, TextTransparency = 1,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = 1, Parent = body,
+    })
+    local t2 = create("TextLabel", {
+        Text = tostring(text or ""), Font = FONT, TextSize = 12, TextColor3 = Theme.Sub, TextTransparency = 1,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 2, Parent = body,
+    })
+    tw(n, 0.25, { BackgroundTransparency = 0.04 })
+    tw(st, 0.25, { Transparency = 0 })
+    tw(bar, 0.25, { BackgroundTransparency = 0 })
+    tw(t1, 0.25, { TextTransparency = 0 })
+    tw(t2, 0.25, { TextTransparency = 0 })
+    -- limitar cantidad
+    local frames = {}
+    for _, c in ipairs(NotifHolder:GetChildren()) do if c:IsA("Frame") then frames[#frames + 1] = c end end
+    if #frames > 6 then
+        table.sort(frames, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+        frames[1]:Destroy()
+    end
+    task.delay(dur or 4.5, function()
+        if not n.Parent then return end
+        tw(n, 0.3, { BackgroundTransparency = 1 })
+        tw(st, 0.3, { Transparency = 1 })
+        tw(bar, 0.3, { BackgroundTransparency = 1 })
+        tw(t1, 0.3, { TextTransparency = 1 })
+        tw(t2, 0.3, { TextTransparency = 1 })
+        task.wait(0.32)
+        n:Destroy()
+    end)
+end
+
+---------------------------------------------------------------------------
+-- Capa de juego (detección adaptativa)
+---------------------------------------------------------------------------
+local Cache = { room = nil, gens = {}, monsters = {}, items = {}, elevator = nil, elevScanT = 0 }
+local G = {}
+
+local function modelsIn(folder)
+    local t = {}
+    if folder then
+        for _, c in ipairs(folder:GetChildren()) do
+            if c:IsA("Model") or c:IsA("BasePart") or c:IsA("Tool") then t[#t + 1] = c end
+        end
+    end
+    return t
+end
+
+local fallbackRoom, fallbackT = nil, 0
+function G.room()
+    local cr = workspace:FindFirstChild("CurrentRoom") or workspace:FindFirstChild("CurrentRooms")
+    if cr then
+        for _, c in ipairs(cr:GetChildren()) do
+            if (c:IsA("Model") or c:IsA("Folder")) and (c:FindFirstChild("Generators") or c:FindFirstChild("Monsters") or c:FindFirstChild("Items")) then
+                return c
+            end
+        end
+        local first = cr:FindFirstChildWhichIsA("Model") or cr:FindFirstChildWhichIsA("Folder")
+        if first then return first end
+    end
+    if tick() - fallbackT > 3 then
+        fallbackT = tick()
+        local gf = workspace:FindFirstChild("Generators", true)
+        fallbackRoom = gf and gf.Parent or nil
+    end
+    if fallbackRoom and fallbackRoom.Parent then return fallbackRoom end
+    return nil
+end
+
+local function isPlayerChar(m)
+    return Players:GetPlayerFromCharacter(m) ~= nil
+end
+
+function G.refresh()
+    local room = G.room()
+    if room ~= Cache.room then
+        Cache.elevator = nil
+        Cache.elevScanT = 0
+    end
+    Cache.room = room
+    if not room then
+        Cache.gens, Cache.monsters, Cache.items = {}, {}, {}
+        return
+    end
+    Cache.gens = modelsIn(room:FindFirstChild("Generators"))
+    Cache.items = modelsIn(room:FindFirstChild("Items"))
+    local mf = room:FindFirstChild("Monsters")
+    local mons = modelsIn(mf)
+    if #mons == 0 then
+        for _, c in ipairs(workspace:GetChildren()) do
+            if c:IsA("Model") and c:FindFirstChildOfClass("Humanoid") and not isPlayerChar(c) then
+                local n = lower(c.Name)
+                if n:find("monster") or n:find("twisted") then mons[#mons + 1] = c end
+            end
+        end
+    end
+    Cache.monsters = mons
+    if (not Cache.elevator or not Cache.elevator.Parent) and tick() - Cache.elevScanT > 3 then
+        Cache.elevScanT = tick()
+        local e = room:FindFirstChild("Elevator") or room:FindFirstChild("ElevatorExit") or room:FindFirstChild("Exit")
+        if not e then
+            for _, d in ipairs(room:GetDescendants()) do
+                if d:IsA("Model") and lower(d.Name):find("elevator") then e = d break end
+            end
+        end
+        if not e then
+            local ef = workspace:FindFirstChild("Elevators")
+            local hrp = getHRP()
+            if ef and hrp then
+                local best, bd
+                for _, c in ipairs(ef:GetChildren()) do
+                    local p = posOf(c)
+                    if p then
+                        local d = (p - hrp.Position).Magnitude
+                        if not bd or d < bd then best, bd = c, d end
+                    end
+                end
+                e = best
+            end
+        end
+        Cache.elevator = e
+    end
+end
+
+function G.genDone(g)
+    local c = findVal(statRoots(g), { "Completed", "Complete", "Finished", "Done", "Fixed", "Repaired" })
+    if c ~= nil then return c == true end
+    local p = G.genProgress(g)
+    return p ~= nil and p >= 100
+end
+
+function G.genProgress(g)
+    local p = findVal(statRoots(g), { "Completion", "Progress", "Percent", "Percentage", "Charge" })
+    if type(p) == "number" then return p end
+    return nil
+end
+
+function G.genPrompt(g)
+    return g:FindFirstChildWhichIsA("ProximityPrompt", true)
+end
+
+function G.genOccupied(g)
+    local ap = findVal(statRoots(g), { "ActivePlayer", "Player", "User", "Repairer" })
+    if typeof(ap) == "Instance" and ap ~= LP and ap ~= LP.Character then return true end
+    local p = posOf(g)
+    if not p then return false end
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LP and pl.Character then
+            local r = pl.Character:FindFirstChild("HumanoidRootPart")
+            if r and (r.Position - p).Magnitude < 7 then return true end
+        end
+    end
+    return false
+end
+
+function G.twName(m)
+    local n = m.Name:gsub("Monster", ""):gsub("Twisted", ""):gsub("_", " ")
+    n = n:gsub("^%s+", ""):gsub("%s+$", "")
+    if n == "" then n = m.Name end
+    return n
+end
+
+local MAIN_TWISTEDS = { "dandy", "astro", "pebble", "shelly", "sprout", "vee", "dyle" }
+function G.isMain(m) return hasAny(G.twName(m), MAIN_TWISTEDS) end
+function G.isRanged(m) return hasAny(m.Name, splitList(F.RangedNames)) end
+
+function G.nearestMonster(pos)
+    local best, bd
+    if not pos then return nil end
+    for _, m in ipairs(Cache.monsters) do
+        local p = posOf(m)
+        if p then
+            local d = (p - pos).Magnitude
+            if not bd or d < bd then best, bd = m, d end
+        end
+    end
+    return best, bd
+end
+
+function G.health(char)
+    if not char then return nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hp = findVal(statRoots(char), { "Health", "Hearts", "HP" })
+    local mx = findVal(statRoots(char), { "MaxHealth", "MaxHearts", "MaxHP" })
+    if type(hp) ~= "number" and hum then hp, mx = hum.Health, hum.MaxHealth end
+    if type(hp) ~= "number" then return nil end
+    if type(mx) ~= "number" or mx <= 0 then mx = (hum and hum.MaxHealth) or hp end
+    return hp, mx
+end
+
+function G.stamina(player)
+    local char = player.Character
+    local roots = {}
+    for _, r in ipairs(statRoots(char)) do roots[#roots + 1] = r end
+    for _, r in ipairs(statRoots(player)) do roots[#roots + 1] = r end
+    local st = findVal(roots, { "Stamina", "CurrentStamina", "Energy" })
+    local mx = findVal(roots, { "MaxStamina", "StaminaMax", "MaxEnergy" })
+    if type(st) ~= "number" then return nil end
+    if type(mx) ~= "number" or mx <= 0 then mx = 100 end
+    return st, mx
+end
+
+function G.inventory()
+    local list = {}
+    local bp = LP:FindFirstChildOfClass("Backpack")
+    if bp then for _, t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then list[#list + 1] = { name = t.Name, obj = t } end end end
+    local ch = LP.Character
+    if ch then for _, t in ipairs(ch:GetChildren()) do if t:IsA("Tool") then list[#list + 1] = { name = t.Name, obj = t } end end end
+    for _, root in ipairs({ LP, ch }) do
+        if root then
+            local inv = root:FindFirstChild("Inventory") or root:FindFirstChild("Items") or root:FindFirstChild("Slots")
+            if inv then
+                for i, v in ipairs(inv:GetChildren()) do
+                    local nm = (v:IsA("StringValue") and v.Value ~= "" and v.Value) or v:GetAttribute("Item") or v.Name
+                    if nm and nm ~= "" and lower(tostring(nm)) ~= "none" and lower(tostring(nm)) ~= "empty" then
+                        list[#list + 1] = { name = tostring(nm), obj = v, slot = tonumber(v.Name:match("%d+")) or i }
+                    end
+                end
+            end
+        end
+    end
+    return list
+end
+
+function G.findItem(keys)
+    for _, e in ipairs(G.inventory()) do
+        if hasAny(e.name, keys) then return e end
+    end
+    return nil
+end
+
+function G.useItem(e)
+    if not e then return false end
+    local hum = getHum()
+    if e.obj:IsA("Tool") then
+        if e.obj.Parent ~= LP.Character and hum then
+            pcall(function() hum:EquipTool(e.obj) end)
+            task.wait(0.12)
+        end
+        pcall(function() e.obj:Activate() end)
+        if VIM then
+            local vp = workspace.CurrentCamera.ViewportSize
+            clickAt(vp.X / 2, vp.Y / 2)
+        end
+        return true
+    end
+    if e.slot and SLOT_KEYS[e.slot] then
+        pressKey(SLOT_KEYS[e.slot])
+        if F.ItemUse == "Slot + clic" then
+            task.delay(0.1, function()
+                local vp = workspace.CurrentCamera.ViewportSize
+                clickAt(vp.X / 2, vp.Y / 2)
+            end)
+        end
+        return true
+    end
+    return false
+end
+
+local floorValueObj
+function G.floorNumber()
+    if floorValueObj and floorValueObj.Parent then return floorValueObj.Value end
+    for _, root in ipairs({ ReplicatedStorage, workspace }) do
+        for _, n in ipairs({ "CurrentFloor", "Floor", "FloorNumber", "Level" }) do
+            local a = root:GetAttribute(n)
+            if type(a) == "number" then return a end
+            local v = root:FindFirstChild(n, true)
+            if v and (v:IsA("IntValue") or v:IsA("NumberValue")) then
+                floorValueObj = v
+                return v.Value
+            end
+        end
+    end
+    return nil
+end
+
+-- Raycasts
+local RP = RaycastParams.new()
+RP.FilterType = Enum.RaycastFilterType.Exclude
+local function rayFilter()
+    local ex = {}
+    for _, p in ipairs(Players:GetPlayers()) do if p.Character then ex[#ex + 1] = p.Character end end
+    if Cache.room then
+        for _, n in ipairs({ "Monsters", "Generators", "Items" }) do
+            local f = Cache.room:FindFirstChild(n)
+            if f then ex[#ex + 1] = f end
+        end
+    end
+    for _, m in ipairs(Cache.monsters) do ex[#ex + 1] = m end
+    RP.FilterDescendantsInstances = ex
+end
+
+local function groundY(pos)
+    rayFilter()
+    local r = workspace:Raycast(pos + Vector3.new(0, 4, 0), Vector3.new(0, -70, 0), RP)
+    return r and r.Position.Y or (pos.Y - 3)
+end
+
+local function isUnderground()
+    local h = getHRP()
+    if not h then return false end
+    rayFilter()
+    local down = workspace:Raycast(h.Position, Vector3.new(0, -5, 0), RP)
+    if down then return false end
+    local up = workspace:Raycast(h.Position, Vector3.new(0, 22, 0), RP)
+    return up ~= nil
+end
+
+---------------------------------------------------------------------------
+-- Movimiento (tween manual por Heartbeat, cancelable, replicable)
+---------------------------------------------------------------------------
+local Move = { path = nil, i = 0, speed = 38, active = false, owner = nil, arrived = false, lastSurface = nil }
+
+function Move.go(path, speed, owner)
+    Move.path = path
+    Move.i = 1
+    Move.speed = speed or F.TweenSpeed
+    Move.owner = owner
+    Move.active = true
+    Move.arrived = false
+end
+
+function Move.resurface()
+    local h = getHRP()
+    if not h then return end
+    local p = h.Position
+    rayFilter()
+    local up = workspace:Raycast(p, Vector3.new(0, 30, 0), RP)
+    if up then
+        local down = workspace:Raycast(Vector3.new(p.X, up.Position.Y + 7, p.Z), Vector3.new(0, -9, 0), RP)
+        local y = down and down.Position.Y or (up.Position.Y + 2)
+        h.CFrame = CFrame.new(p.X, y + 3.2, p.Z) * (h.CFrame - h.CFrame.Position)
+    elseif Move.lastSurface then
+        h.CFrame = Move.lastSurface
+    end
+    h.AssemblyLinearVelocity = Vector3.zero
+end
+
+function Move.stop(resurface)
+    local wasActive = Move.active
+    Move.active = false
+    Move.path = nil
+    Move.owner = nil
+    Move.arrived = false
+    if resurface and wasActive and isUnderground() then Move.resurface() end
+end
+
+-- Ruta según modo: Directo / Abajo / Arriba
+local function buildPath(fromPos, toCF, mode)
+    local to = toCF.Position
+    local rot = toCF - to
+    mode = mode or F.FarmRoute
+    if mode == "Directo" or (fromPos - to).Magnitude < 6 then return { toCF } end
+    if mode == "Abajo" then
+        local y = math.min(to.Y, groundY(fromPos) + 3 - math.max(F.FarmDepth, 6), groundY(to) + 3 - math.max(F.FarmDepth, 6))
+        return { CFrame.new(fromPos.X, y, fromPos.Z) * rot, CFrame.new(to.X, y, to.Z) * rot, toCF }
+    end
+    local y = math.max(fromPos.Y, to.Y) + F.SkyHeight
+    return { CFrame.new(fromPos.X, y, fromPos.Z) * rot, CFrame.new(to.X, y, to.Z) * rot, toCF }
+end
+
+---------------------------------------------------------------------------
+-- Skill check (visual + remote aprendido)
+---------------------------------------------------------------------------
+local SC = { frame = nil, scanT = 0, prev = {}, lastPress = 0, wasShown = false, learned = nil, hooked = false, oldNC = nil }
+local MARK_K = { "marker", "needle", "pointer", "cursor", "arrow", "indicator", "line", "hand", "tick", "slider" }
+local ZONE_PERFECT = { "gold", "great", "perfect", "crit", "excellent" }
+local ZONE_ANY = { "zone", "area", "target", "success", "good", "green", "hit", "region", "sweet", "gold", "great", "perfect" }
+
+local function scFindFrame()
+    if SC.frame and SC.frame.Parent then return SC.frame end
+    if tick() - SC.scanT < 1 then return nil end
+    SC.scanT = tick()
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    if not pg then return nil end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("GuiObject") then
+            local n = lower(d.Name)
+            if (n:find("skill") and n:find("check")) or n:find("calibrat") then
+                SC.frame = d
+                return d
+            end
+        end
+    end
+    return nil
+end
+
+-- Devuelve: marcadores por nombre, resto de objetos (fallback), zonas, zonas perfectas
+local function scParts(frame)
+    local marks, others, zones, pzones = {}, {}, {}, {}
+    for _, d in ipairs(frame:GetDescendants()) do
+        if d:IsA("GuiObject") and d.Visible then
+            local n = lower(d.Name)
+            local isZone, isPerfect, isMark = false, false, false
+            for _, k in ipairs(ZONE_ANY) do if n:find(k, 1, true) then isZone = true break end end
+            for _, k in ipairs(ZONE_PERFECT) do if n:find(k, 1, true) then isPerfect = true break end end
+            if isZone then
+                zones[#zones + 1] = d
+                if isPerfect then pzones[#pzones + 1] = d end
+            else
+                for _, k in ipairs(MARK_K) do if n:find(k, 1, true) then isMark = true break end end
+                if isMark then marks[#marks + 1] = d else others[#others + 1] = d end
+            end
+        end
+    end
+    return marks, others, zones, pzones
+end
+
+local function angDiff(a, b)
+    local d = (a - b) % 360
+    if d > 180 then d = d - 360 end
+    return abs(d)
+end
+
+local function scPress()
+    if tick() - SC.lastPress < 0.18 then return end
+    SC.lastPress = tick()
+    if F.SCKey == "Clic" then
+        local vp = workspace.CurrentCamera.ViewportSize
+        clickAt(vp.X / 2, vp.Y / 2)
+    else
+        pressKey(keyFromName(F.SCKey) or Enum.KeyCode.Space)
+    end
+    if F.SCButtons and SC.frame then
+        for _, d in ipairs(SC.frame:GetDescendants()) do
+            if d:IsA("GuiButton") and d.Visible then clickGui(d) break end
+        end
+    end
+end
+
+local function scReplay()
+    local L = SC.learned
+    if not L or not L.remote or not L.remote.Parent then return false end
+    local args = {}
+    for i = 1, L.args.n do args[i] = L.args[i] end
+    task.delay(F.SCInstantDelay, function()
+        pcall(function()
+            if L.method == "InvokeServer" then L.remote:InvokeServer(table.unpack(args, 1, L.args.n))
+            else L.remote:FireServer(table.unpack(args, 1, L.args.n)) end
+        end)
+    end)
+    return true
+end
+
+local function scInstallHook()
+    if SC.hooked or not (X.hookmm and X.getncm) then return SC.hooked end
+    local wrap = X.newcc or function(f) return f end
+    local ok = pcall(function()
+        SC.oldNC = X.hookmm(game, "__namecall", wrap(function(self, ...)
+            if Hub.Alive and F.SCMode == "Remote (aprendido)" then
+                local m = X.getncm()
+                if (m == "FireServer" or m == "InvokeServer") and not (X.checkcaller and X.checkcaller()) then
+                    local okn, nm = pcall(function() return self.Name end)
+                    if okn and type(nm) == "string" then
+                        local l = lower(nm)
+                        if l:find("skill") or l:find("check") or l:find("calib") then
+                            SC.learned = { remote = self, method = m, args = table.pack(...) }
+                        end
+                    end
+                end
+            end
+            return SC.oldNC(self, ...)
+        end))
+    end)
+    SC.hooked = ok
+    return ok
+end
+
+local function scStep(dt)
+    if not (F.AutoSkillCheck or F.AutoFarm) then return end
+    local frame = scFindFrame()
+    if not frame then return end
+    local shown = isShown(frame)
+    if shown and not SC.wasShown then
+        SC.prev = {}
+        if F.SCMode == "Remote (aprendido)" and SC.learned then
+            SC.wasShown = true
+            SC.usedRemote = scReplay()
+            return
+        end
+        SC.usedRemote = false
+    end
+    SC.wasShown = shown
+    if not shown or SC.usedRemote then return end
+
+    local marks, others, zones, pzones = scParts(frame)
+    if #zones == 0 then return end
+    local targets = (F.SCPerfect and #pzones > 0) and pzones or zones
+
+    -- El marcador es el objeto que se mueve más rápido (prioriza los nombrados)
+    local now = {}
+    local function fastest(list)
+        local best, bs, bv, ba, bp, br = nil, 5, nil, nil, nil, nil
+        for _, mk in ipairs(list) do
+            local c = mk.AbsolutePosition + mk.AbsoluteSize / 2
+            local r = mk.AbsoluteRotation
+            now[mk] = { pos = c, rot = r }
+            local pv = SC.prev[mk]
+            if pv and dt > 0 then
+                local v = (c - pv.pos) / dt
+                local av = (r - pv.rot) / dt
+                local sp = math.max(v.Magnitude, abs(av))
+                if sp > bs then best, bs, bv, ba, bp, br = mk, sp, v, av, c, r end
+            end
+        end
+        return best, bv, ba, bp, br
+    end
+    local marker, vel, angVel, mc, rot = fastest(marks)
+    if not marker then marker, vel, angVel, mc, rot = fastest(others) end
+    SC.prev = now
+    if not marker then return end
+
+    local lead = F.SCLead
+    local pred = mc + vel * lead
+    local linear = vel.Magnitude > 5
+    local angular = abs(angVel) > 5
+    for _, z in ipairs(targets) do
+        local hit = false
+        if linear then
+            local zp, zs = z.AbsolutePosition, z.AbsoluteSize
+            if abs(vel.X) >= abs(vel.Y) then
+                local m = zs.X * 0.12
+                hit = pred.X >= zp.X + m and pred.X <= zp.X + zs.X - m
+            else
+                local m = zs.Y * 0.12
+                hit = pred.Y >= zp.Y + m and pred.Y <= zp.Y + zs.Y - m
+            end
+        elseif angular then
+            hit = angDiff(rot + angVel * lead, z.AbsoluteRotation) <= F.SCAngleTol
+        end
+        if hit then scPress() return end
+    end
+end
+
+---------------------------------------------------------------------------
+-- Farm (estilo autopiloto: tween + noclip + skill check + evasión)
+---------------------------------------------------------------------------
+local Farm = { phase = "idle", gen = nil, prompt = nil, cf = nil, startT = 0, workStart = 0,
+    lastProg = nil, lastProgT = 0, lastPrompt = 0, blacklist = {}, itemBL = {}, status = "Inactivo", item = nil }
+local Heat = {}
+
+local function workCF(g)
+    local pr = G.genPrompt(g)
+    local part = pr and pr.Parent
+    if part and part:IsA("Attachment") then part = part.Parent end
+    if not (part and part:IsA("BasePart")) then part = partOf(g) end
+    if not part then return nil end
+    local center = posOf(g) or part.Position
+    local base = part.Position
+    local dir = Vector3.new(base.X - center.X, 0, base.Z - center.Z)
+    if dir.Magnitude < 0.5 then
+        local lv = part.CFrame.LookVector
+        dir = Vector3.new(lv.X, 0, lv.Z)
+        if dir.Magnitude < 0.1 then dir = Vector3.new(0, 0, 1) end
+    end
+    dir = dir.Unit
+    local stand = base + dir * 2.5
+    local gy = groundY(Vector3.new(stand.X, base.Y + 2, stand.Z))
+    local y = gy + 3.2
+    if F.FarmPos == "Bajo el suelo" then y = y - F.FarmDepth end
+    local p = Vector3.new(stand.X, y, stand.Z)
+    local look = Vector3.new(center.X, y, center.Z)
+    if (look - p).Magnitude < 0.1 then return CFrame.new(p), pr end
+    return CFrame.lookAt(p, look), pr
+end
+
+local function surfaceOrFarmCF(pos)
+    local y = groundY(pos) + 3.2
+    if F.FarmPos == "Bajo el suelo" then y = y - F.FarmDepth end
+    return CFrame.new(pos.X, y, pos.Z)
+end
+
+local function genDanger(g)
+    local p = posOf(g)
+    if not p then return 0 end
+    local s = 0
+    for _, m in ipairs(Cache.monsters) do
+        local mp = posOf(m)
+        if mp then
+            local d = (mp - p).Magnitude
+            if d < F.EvadeRadius * 1.6 then s = s + (F.EvadeRadius * 1.6 - d) end
+        end
+    end
+    return s
+end
+
+local function pickGen()
+    local h = getHRP()
+    if not h then return nil end
+    local best, bs
+    for _, g in ipairs(Cache.gens) do
+        if not G.genDone(g) and (Farm.blacklist[g] or 0) < tick() and not (F.SkipOccupied and G.genOccupied(g)) then
+            local p = posOf(g)
+            if p then
+                local dist = (p - h.Position).Magnitude
+                local danger = genDanger(g)
+                local _, md = G.nearestMonster(p)
+                local blocked = F.FarmEvade and md ~= nil and md < F.EvadeRadius
+                if not blocked then
+                    local prog = G.genProgress(g) or 0
+                    local s
+                    if F.FarmPriority == "Cercanía" then s = dist
+                    elseif F.FarmPriority == "Más progreso" then s = dist - prog * 4
+                    elseif F.FarmPriority == "Menos peligro" then s = danger * 50 + dist * 0.2
+                    else s = dist + danger * 18 - prog * 1.5 end
+                    if not bs or s < bs then best, bs = g, s end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function nearestItem(maxDist)
+    local h = getHRP()
+    if not h then return nil end
+    local best, bd
+    for _, it in ipairs(Cache.items) do
+        if (Farm.itemBL[it] or 0) < tick() then
+            local p = posOf(it)
+            if p then
+                local d = (p - h.Position).Magnitude
+                if (not maxDist or d <= maxDist) and (not bd or d < bd) then
+                    local _, md = G.nearestMonster(p)
+                    if not (F.FarmEvade and md and md < F.EvadeRadius) then best, bd = it, d end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function collectItem(it)
+    local pr = it:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if pr then usePrompt(pr) end
+    local h, part = getHRP(), partOf(it)
+    if X.firetouch and h and part then
+        pcall(X.firetouch, h, part, 0)
+        task.delay(0.05, function() pcall(X.firetouch, h, part, 1) end)
+    end
+end
+
+local function holdUnderHere(owner)
+    local h = getHRP()
+    if not h then return end
+    if Farm.holding and Move.active and Move.owner == owner then return end
+    Farm.holding = true
+    if isUnderground() then
+        Move.go({ h.CFrame }, F.TweenSpeed, owner)
+        return
+    end
+    local p = h.Position
+    Move.go({ CFrame.new(p.X, groundY(p) + 3.2 - math.max(F.FarmDepth, 7), p.Z) }, F.TweenSpeed, owner)
+end
+
+local function farmReset()
+    Farm.phase, Farm.gen, Farm.prompt, Farm.item = "idle", nil, nil, nil
+end
+
+local function farmGo(path, phase, status)
+    Farm.holding = false
+    Move.go(path, F.TweenSpeed, "farm")
+    Farm.phase, Farm.startT, Farm.status = phase, tick(), status
+end
+
+local function farmTick()
+    local h, hum = getHRP(), getHum()
+    if not h or not hum or hum.Health <= 0 then Farm.status = "Esperando personaje" farmReset() return end
+    if not Cache.room or #Cache.gens == 0 then
+        Farm.status = "Esperando piso / lobby"
+        if Move.owner == "farm" then Move.stop(true) end
+        farmReset()
+        return
+    end
+
+    -- Evasión: un twisted se acercó a la máquina actual
+    if F.FarmEvade and Farm.gen and (Farm.phase == "travel" or Farm.phase == "work") then
+        local _, d = G.nearestMonster(posOf(Farm.gen))
+        if d and d < F.EvadeRadius then
+            Farm.blacklist[Farm.gen] = tick() + 6
+            farmReset()
+            Farm.status = "Evadiendo twisted"
+        end
+    end
+
+    if Farm.phase == "idle" then
+        -- Desvío corto por ítems cercanos
+        if F.FarmItems then
+            local it = nearestItem(F.ItemDetour)
+            if it then
+                Farm.item = it
+                farmGo(buildPath(h.Position, surfaceOrFarmCF(posOf(it))), "item", "Recogiendo ítem")
+                return
+            end
+        end
+        local g = pickGen()
+        if g then
+            local cf, pr = workCF(g)
+            if cf then
+                Farm.gen, Farm.prompt, Farm.cf = g, pr, cf
+                farmGo(buildPath(h.Position, cf), "travel", "Viajando a máquina")
+                return
+            end
+        end
+        local allDone = true
+        for _, gg in ipairs(Cache.gens) do if not G.genDone(gg) then allDone = false break end end
+        if allDone then
+            if F.FarmItems then
+                local it = nearestItem(nil)
+                if it then
+                    Farm.item = it
+                    farmGo(buildPath(h.Position, surfaceOrFarmCF(posOf(it))), "item", "Recogiendo ítems restantes")
+                    return
+                end
+            end
+            if F.FarmElevator and Cache.elevator then
+                local e = Cache.elevator
+                local target
+                for _, d in ipairs(e:GetDescendants()) do
+                    if d:IsA("BasePart") then
+                        local n = lower(d.Name)
+                        if n:find("zone") or n:find("inside") or n:find("hitbox") or n:find("trigger") or n:find("detect") or n:find("region") then target = d break end
+                    end
+                end
+                local p = target and target.Position or posOf(e)
+                if p then
+                    farmGo(buildPath(h.Position, CFrame.new(p.X, groundY(p) + 3.2, p.Z)), "elevator", "Yendo al elevador")
+                    return
+                end
+            end
+            Farm.status = "Piso completo"
+        else
+            Farm.status = "Máquinas bloqueadas · esperando"
+            holdUnderHere("farm")
+        end
+        return
+    end
+
+    if Farm.phase == "item" then
+        local it = Farm.item
+        if not it or not it.Parent then farmReset() return end
+        if Move.arrived then
+            collectItem(it)
+            Farm.itemBL[it] = tick() + 4
+            farmReset()
+        elseif tick() - Farm.startT > 20 then
+            Farm.itemBL[it] = tick() + 15
+            farmReset()
+        end
+        return
+    end
+
+    if Farm.phase == "travel" then
+        local g = Farm.gen
+        if not g or not g.Parent or G.genDone(g) then farmReset() return end
+        if Move.arrived then
+            Farm.phase = "work"
+            Farm.workStart, Farm.lastPrompt = tick(), 0
+            Farm.lastProg, Farm.lastProgT = G.genProgress(g), tick()
+        elseif tick() - Farm.startT > 45 then
+            Farm.blacklist[g] = tick() + 10
+            farmReset()
+        end
+        return
+    end
+
+    if Farm.phase == "work" then
+        local g = Farm.gen
+        if not g or not g.Parent then farmReset() return end
+        if G.genDone(g) then
+            farmReset()
+            Farm.status = "Máquina completada"
+            return
+        end
+        local p = G.genProgress(g)
+        if p and p ~= Farm.lastProg then Farm.lastProg, Farm.lastProgT = p, tick() end
+        if tick() - Farm.lastPrompt > 3 and tick() - Farm.lastProgT > 2.2 then
+            usePrompt(Farm.prompt or G.genPrompt(g))
+            Farm.lastPrompt = tick()
+        end
+        if tick() - Farm.workStart > F.GenTimeout then
+            Farm.blacklist[g] = tick() + 25
+            farmReset()
+            return
+        end
+        Farm.status = ("Reparando máquina · %s"):format(p and (floor(p) .. "%") or "...")
+        return
+    end
+
+    if Farm.phase == "elevator" then
+        if Move.arrived then Farm.status = "En el elevador · esperando" end
+        return
+    end
+end
+
+---------------------------------------------------------------------------
+-- Auto-hide / Auto-distract
+---------------------------------------------------------------------------
+local Hide = { target = nil, origin = nil, lastDanger = 0, returning = false }
+
+local function hideTarget(threatPos)
+    local h = getHRP()
+    local p = h.Position
+    if F.HideMode == "Cielo" then
+        return CFrame.new(p.X, groundY(p) + 3.2 + 40, p.Z)
+    elseif F.HideMode == "Punto seguro" then
+        local cands = {}
+        for _, g in ipairs(Cache.gens) do local gp = posOf(g) if gp then cands[#cands + 1] = gp end end
+        for _, it in ipairs(Cache.items) do local ip = posOf(it) if ip then cands[#cands + 1] = ip end end
+        if Cache.elevator then local ep = posOf(Cache.elevator) if ep then cands[#cands + 1] = ep end end
+        local best, bs
+        for _, c in ipairs(cands) do
+            local _, md = G.nearestMonster(c)
+            md = md or 999
+            if not bs or md > bs then best, bs = c, md end
+        end
+        if best then return CFrame.new(best.X, groundY(best) + 3.2 - F.HideDepth, best.Z) end
+    end
+    if isUnderground() then return h.CFrame end
+    return CFrame.new(p.X, groundY(p) + 3.2 - F.HideDepth, p.Z)
+end
+
+local function hideStep()
+    local h = getHRP()
+    if not h then return end
+    if not Hide.target then
+        if Move.owner == "farm" then farmReset() end
+        Hide.origin = (not isUnderground()) and h.CFrame or Move.lastSurface
+        Hide.target = hideTarget()
+        local path = (F.HideMode == "Punto seguro") and buildPath(h.Position, Hide.target, "Abajo") or { Hide.target }
+        Move.go(path, F.TweenSpeed * 1.6, "hide")
+    end
+end
+
+local Dis = { angle = 0 }
+local function distractStep(dt)
+    local h = getHRP()
+    if not h then return false end
+    local target
+    if F.DistractTrigger == "Siempre" then
+        target = G.nearestMonster(h.Position)
+    else
+        local bd
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= LP and pl.Character then
+                local r = pl.Character:FindFirstChild("HumanoidRootPart")
+                if r then
+                    local m, d = G.nearestMonster(r.Position)
+                    if m and d < F.DangerRadius and (not bd or d < bd) then target, bd = m, d end
+                end
+            end
+        end
+    end
+    if not target then return false end
+    local mp = posOf(target)
+    if not mp then return false end
+    local ranged = G.isRanged(target)
+    local r = ranged and F.DistractRadiusRanged or F.DistractRadius
+    local ht = ranged and F.DistractHeightRanged or F.DistractHeight
+    Dis.angle = Dis.angle + dt * F.DistractOrbit * (ranged and 1.6 or 1)
+    local jitter = ranged and Vector3.new(0, math.sin(tick() * 4) * 2.5, 0) or Vector3.zero
+    local pos = mp + Vector3.new(math.cos(Dis.angle) * r, ht, math.sin(Dis.angle) * r) + jitter
+    Move.go({ CFrame.lookAt(pos, Vector3.new(mp.X, pos.Y, mp.Z)) }, F.TweenSpeed * (ranged and 2 or 1.5), "distract")
+    return true
+end
+
+---------------------------------------------------------------------------
+-- Cerebro (prioridades: Hide > Farm > Distract)
+---------------------------------------------------------------------------
+local Vee = { last = 0, busy = false }
+
+local function brainTick(dt)
+    local h, hum = getHRP(), getHum()
+    if not h or not hum or hum.Health <= 0 then
+        if Move.active then Move.stop(false) end
+        Hide.target = nil
+        return
+    end
+    if hum.FloorMaterial ~= Enum.Material.Air and not Move.active then Move.lastSurface = h.CFrame end
+    if Vee.busy then return end
+
+    -- Auto-hide
+    local farmSafe = F.AutoFarm and F.FarmPos == "Bajo el suelo"
+    if F.AutoHide and not farmSafe then
+        local ref = Hide.origin and Hide.origin.Position or h.Position
+        local _, d = G.nearestMonster(ref)
+        local radius = Hide.target and F.DangerRadius * 1.15 or F.DangerRadius
+        if d and d < radius then
+            Hide.lastDanger = tick()
+            hideStep()
+            return
+        end
+        if Hide.target then
+            if tick() - Hide.lastDanger < 1.5 then return end
+            Hide.target = nil
+            if Hide.origin and not F.AutoFarm then
+                Move.go({ Hide.origin }, F.TweenSpeed * 1.4, "hide-return")
+                Hide.returning = true
+            end
+            Hide.origin = nil
+            return
+        end
+    elseif Hide.target then
+        Hide.target, Hide.origin = nil, nil
+        if Move.owner == "hide" then Move.stop(true) end
+    end
+    if Hide.returning then
+        if Move.owner ~= "hide-return" or Move.arrived then
+            Hide.returning = false
+            if Move.owner == "hide-return" then Move.stop(false) end
+        else
+            return
+        end
+    end
+
+    if F.AutoFarm then farmTick() return end
+    if Move.owner == "farm" then Move.stop(true) farmReset() end
+
+    if F.AutoDistract then
+        if distractStep(dt) then return end
+    end
+    if Move.owner == "distract" or Move.owner == "hide" then Move.stop(true) end
+end
+
+---------------------------------------------------------------------------
+-- Ventana principal (librería propia)
+---------------------------------------------------------------------------
+local Lib = { Elements = {}, Tabs = {}, Current = nil, Binding = false }
+
+local Main = create("Frame", {
+    Name = "Main", Size = UDim2.fromOffset(640, 430), Position = UDim2.new(0.5, -320, 0.5, -215),
+    BackgroundColor3 = Theme.Bg, BorderSizePixel = 0, ClipsDescendants = true, Parent = Gui,
+})
+corner(Main, 8)
+stroke(Main)
+
+local Top = create("Frame", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = Theme.Side, BorderSizePixel = 0, Parent = Main })
+create("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1), BackgroundColor3 = Theme.Stroke, BorderSizePixel = 0, Parent = Top })
+create("TextLabel", {
+    Text = "TAUPE", Font = FONT_B, TextSize = 15, TextColor3 = Theme.Accent, BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(16, 0), Size = UDim2.new(0, 60, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = Top,
+})
+create("TextLabel", {
+    Text = "Dandy's World  ·  v" .. VERSION, Font = FONT, TextSize = 12, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(72, 0), Size = UDim2.new(0, 220, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = Top,
+})
+local TopStatus = create("TextLabel", {
+    Text = "", Font = FONT, TextSize = 12, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+    Position = UDim2.new(1, -330, 0, 0), Size = UDim2.new(0, 240, 1, 0), TextXAlignment = Enum.TextXAlignment.Right,
+    TextTruncate = Enum.TextTruncate.AtEnd, Parent = Top,
+})
+
+local function topButton(txt, xOff)
+    local b = create("TextButton", {
+        Text = txt, Font = FONT_M, TextSize = 16, TextColor3 = Theme.Sub, AutoButtonColor = false,
+        BackgroundColor3 = Theme.Elem, BackgroundTransparency = 1, Size = UDim2.fromOffset(28, 26),
+        Position = UDim2.new(1, xOff, 0.5, -13), Parent = Top,
+    })
+    corner(b, 5)
+    b.MouseEnter:Connect(function() tw(b, 0.15, { BackgroundTransparency = 0, TextColor3 = Theme.Text }) end)
+    b.MouseLeave:Connect(function() tw(b, 0.15, { BackgroundTransparency = 1, TextColor3 = Theme.Sub }) end)
+    return b
+end
+local MinBtn = topButton("–", -72)
+local CloseBtn = topButton("×", -40)
+
+local Side = create("Frame", {
+    Position = UDim2.fromOffset(0, 38), Size = UDim2.new(0, 152, 1, -38),
+    BackgroundColor3 = Theme.Side, BorderSizePixel = 0, Parent = Main,
+})
+create("Frame", { Size = UDim2.new(0, 1, 1, 0), Position = UDim2.new(1, -1, 0, 0), BackgroundColor3 = Theme.Stroke, BorderSizePixel = 0, Parent = Side })
+local SideList = create("Frame", { Size = UDim2.new(1, -1, 1, -30), BackgroundTransparency = 1, Parent = Side })
+pad(SideList, 8, 8, 10, 8)
+create("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder, Parent = SideList })
+create("TextLabel", {
+    Text = "RightShift · ocultar", Font = FONT, TextSize = 11, TextColor3 = Theme.Off, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 14, 1, -26), Size = UDim2.new(1, -20, 0, 18), TextXAlignment = Enum.TextXAlignment.Left, Parent = Side,
+})
+
+local Content = create("Frame", {
+    Position = UDim2.fromOffset(152, 38), Size = UDim2.new(1, -152, 1, -38), BackgroundTransparency = 1, Parent = Main,
+})
+
+-- Arrastrar ventana
+do
+    local dragging, startPos, startInput
+    Top.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging, startPos, startInput = true, Main.Position, i.Position
+        end
+    end)
+    bind(UserInputService.InputChanged, function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            local d = i.Position - startInput
+            Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    bind(UserInputService.InputEnded, function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+end
+
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    tw(Main, 0.3, { Size = minimized and UDim2.fromOffset(640, 38) or UDim2.fromOffset(640, 430) })
+end)
+CloseBtn.MouseButton1Click:Connect(function()
+    Main.Visible = false
+    notify("Interfaz oculta", "Pulsa " .. tostring(F.ToggleKey) .. " para volver a mostrarla.")
+end)
+
+local function hover(o, base, over)
+    o.MouseEnter:Connect(function() tw(o, 0.15, { BackgroundColor3 = over or Theme.ElemHover }) end)
+    o.MouseLeave:Connect(function() tw(o, 0.15, { BackgroundColor3 = base or Theme.Elem }) end)
+end
+
+local Section = {}
+Section.__index = Section
+local TabMT = {}
+TabMT.__index = TabMT
+
+function Lib:Select(tab)
+    for _, t in ipairs(self.Tabs) do
+        local on = (t == tab)
+        t.page.Visible = on
+        tw(t.btn, 0.18, { BackgroundTransparency = on and 0 or 1 })
+        tw(t.ind, 0.18, { BackgroundTransparency = on and 0 or 1 })
+        tw(t.lbl, 0.18, { TextColor3 = on and Theme.Text or Theme.Sub })
+    end
+    self.Current = tab
+end
+
+function Lib:Tab(name)
+    local btn = create("TextButton", {
+        Text = "", AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = Theme.Elem,
+        BackgroundTransparency = 1, LayoutOrder = #self.Tabs + 1, Parent = SideList,
+    })
+    corner(btn, 5)
+    local ind = create("Frame", {
+        Size = UDim2.fromOffset(3, 14), Position = UDim2.new(0, 0, 0.5, -7), BackgroundColor3 = Theme.Accent,
+        BackgroundTransparency = 1, BorderSizePixel = 0, Parent = btn,
+    })
+    corner(ind, 2)
+    local lbl = create("TextLabel", {
+        Text = name, Font = FONT_M, TextSize = 13, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -14, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = btn,
+    })
+    local page = create("ScrollingFrame", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.Stroke, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Visible = false, Parent = Content,
+    })
+    pad(page, 10, 12, 10, 12)
+    local function col(x)
+        local c = create("Frame", {
+            BackgroundTransparency = 1, Size = UDim2.new(0.5, -5, 0, 0), Position = x,
+            AutomaticSize = Enum.AutomaticSize.Y, Parent = page,
+        })
+        create("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = c })
+        return c
+    end
+    local tab = setmetatable({ btn = btn, ind = ind, lbl = lbl, page = page, left = col(UDim2.new()), right = col(UDim2.new(0.5, 5, 0, 0)) }, TabMT)
+    btn.MouseButton1Click:Connect(function() Lib:Select(tab) end)
+    btn.MouseEnter:Connect(function() if Lib.Current ~= tab then tw(btn, 0.15, { BackgroundTransparency = 0.5 }) end end)
+    btn.MouseLeave:Connect(function() if Lib.Current ~= tab then tw(btn, 0.15, { BackgroundTransparency = 1 }) end end)
+    table.insert(self.Tabs, tab)
+    if not self.Current then self:Select(tab) end
+    return tab
+end
+
+function TabMT:Section(name, side)
+    local colF = (side == "right") and self.right or self.left
+    local s = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.Panel,
+        BorderSizePixel = 0, LayoutOrder = #colF:GetChildren(), Parent = colF,
+    })
+    corner(s, 6)
+    stroke(s)
+    pad(s, 9, 9, 8, 9)
+    create("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder, Parent = s })
+    create("TextLabel", {
+        Text = string.upper(name), Font = FONT_B, TextSize = 11, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 0, Parent = s,
+    })
+    return setmetatable({ frame = s, n = 0 }, Section)
+end
+
+function Section:_o() self.n = self.n + 1 return self.n end
+
+function Section:Toggle(o)
+    local h = o.Desc and 40 or 28
+    local b = create("TextButton", {
+        Text = "", AutoButtonColor = false, Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = Theme.Elem,
+        BorderSizePixel = 0, LayoutOrder = self:_o(), Parent = self.frame,
+    })
+    corner(b, 5)
+    hover(b)
+    create("TextLabel", {
+        Text = o.Name, Font = FONT, TextSize = 13, TextColor3 = Theme.Text, BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(10, o.Desc and 4 or 0), Size = UDim2.new(1, -56, 0, o.Desc and 18 or h),
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = b,
+    })
+    if o.Desc then
+        create("TextLabel", {
+            Text = o.Desc, Font = FONT, TextSize = 11, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -56, 0, 15),
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = b,
+        })
+    end
+    local track = create("Frame", {
+        Size = UDim2.fromOffset(32, 16), Position = UDim2.new(1, -42, 0.5, -8), BackgroundColor3 = Theme.Off,
+        BorderSizePixel = 0, Parent = b,
+    })
+    corner(track, 8)
+    local knob = create("Frame", {
+        Size = UDim2.fromOffset(12, 12), Position = UDim2.fromOffset(2, 2), BackgroundColor3 = Theme.Sub,
+        BorderSizePixel = 0, Parent = track,
+    })
+    corner(knob, 6)
+    local el = { value = false }
+    function el:Set(v, silent)
+        v = v and true or false
+        el.value = v
+        F[o.Flag] = v
+        tw(track, 0.18, { BackgroundColor3 = v and Theme.AccentDim or Theme.Off })
+        tw(knob, 0.18, { Position = v and UDim2.fromOffset(18, 2) or UDim2.fromOffset(2, 2), BackgroundColor3 = v and Theme.Text or Theme.Sub })
+        if o.Callback and not silent then task.spawn(o.Callback, v) end
+    end
+    function el:Get() return el.value end
+    b.MouseButton1Click:Connect(function() el:Set(not el.value) end)
+    el:Set(F[o.Flag], true)
+    Lib.Elements[o.Flag] = el
+    return el
+end
+
+function Section:Slider(o)
+    local f = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = Theme.Elem, BorderSizePixel = 0,
+        LayoutOrder = self:_o(), Parent = self.frame,
+    })
+    corner(f, 5)
+    create("TextLabel", {
+        Text = o.Name, Font = FONT, TextSize = 13, TextColor3 = Theme.Text, BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(10, 4), Size = UDim2.new(1, -80, 0, 18), TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, Parent = f,
+    })
+    local val = create("TextLabel", {
+        Text = "", Font = FONT_M, TextSize = 12, TextColor3 = Theme.Accent, BackgroundTransparency = 1,
+        Position = UDim2.new(1, -74, 0, 4), Size = UDim2.new(0, 64, 0, 18), TextXAlignment = Enum.TextXAlignment.Right, Parent = f,
+    })
+    local bar = create("TextButton", {
+        Text = "", AutoButtonColor = false, Size = UDim2.new(1, -20, 0, 6), Position = UDim2.new(0, 10, 0, 28),
+        BackgroundColor3 = Theme.Off, BorderSizePixel = 0, Parent = f,
+    })
+    corner(bar, 3)
+    local fill = create("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Theme.Accent, BorderSizePixel = 0, Parent = bar })
+    corner(fill, 3)
+    local step = o.Step or 1
+    local el = {}
+    local function fmt(v)
+        local s = step < 1 and string.format("%.2f", v) or tostring(floor(v + 0.5))
+        return s .. (o.Suffix or "")
+    end
+    function el:Set(v, silent)
+        v = tonumber(v) or o.Min
+        v = math.clamp(v, o.Min, o.Max)
+        v = floor(v / step + 0.5) * step
+        el.value = v
+        F[o.Flag] = v
+        fill.Size = UDim2.new((v - o.Min) / (o.Max - o.Min), 0, 1, 0)
+        val.Text = fmt(v)
+        if o.Callback and not silent then o.Callback(v) end
+    end
+    function el:Get() return el.value end
+    local dragging = false
+    local function upd(x)
+        local r = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+        el:Set(o.Min + (o.Max - o.Min) * r)
+    end
+    bar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            upd(i.Position.X)
+        end
+    end)
+    bind(UserInputService.InputChanged, function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then upd(i.Position.X) end
+    end)
+    bind(UserInputService.InputEnded, function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+    el:Set(F[o.Flag], true)
+    Lib.Elements[o.Flag] = el
+    return el
+end
+
+function Section:Dropdown(o)
+    local opts = o.Options
+    local holder = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = Theme.Elem, BorderSizePixel = 0, ClipsDescendants = true,
+        LayoutOrder = self:_o(), Parent = self.frame,
+    })
+    corner(holder, 5)
+    local head = create("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, Parent = holder })
+    create("TextLabel", {
+        Text = o.Name, Font = FONT, TextSize = 13, TextColor3 = Theme.Text, BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(10, 0), Size = UDim2.new(0.5, -10, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, Parent = head,
+    })
+    local valLbl = create("TextLabel", {
+        Text = "", Font = FONT, TextSize = 12, TextColor3 = Theme.Accent, BackgroundTransparency = 1,
+        Position = UDim2.new(0.5, 0, 0, 0), Size = UDim2.new(0.5, -26, 1, 0), TextXAlignment = Enum.TextXAlignment.Right,
+        TextTruncate = Enum.TextTruncate.AtEnd, Parent = head,
+    })
+    local arrow = create("TextLabel", {
+        Text = "▾", Font = FONT_B, TextSize = 12, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+        Position = UDim2.new(1, -22, 0, 0), Size = UDim2.new(0, 16, 1, 0), Parent = head,
+    })
+    local list = create("Frame", {
+        Position = UDim2.fromOffset(0, 28), Size = UDim2.new(1, 0, 0, #opts * 24 + 6), BackgroundTransparency = 1, Parent = holder,
+    })
+    pad(list, 6, 6, 0, 6)
+    create("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+    local el = { open = false }
+    local btns = {}
+    local function selected(opt)
+        if o.Multi then
+            for _, v in ipairs(el.value or {}) do if v == opt then return true end end
+            return false
+        end
+        return el.value == opt
+    end
+    local function refresh()
+        for opt, b in pairs(btns) do
+            local on = selected(opt)
+            b.TextColor3 = on and Theme.Accent or Theme.Sub
+            b.BackgroundTransparency = on and 0 or 1
+        end
+        if o.Multi then
+            valLbl.Text = (#(el.value or {}) == 0) and "Ninguno" or table.concat(el.value, ", ")
+        else
+            valLbl.Text = tostring(el.value)
+        end
+    end
+    function el:Set(v, silent)
+        if o.Multi then
+            local t = {}
+            if type(v) == "table" then for _, x in ipairs(v) do t[#t + 1] = x end end
+            v = t
+        end
+        el.value = v
+        F[o.Flag] = v
+        refresh()
+        if o.Callback and not silent then task.spawn(o.Callback, v) end
+    end
+    function el:Get() return el.value end
+    local function setOpen(on)
+        el.open = on
+        tw(holder, 0.22, { Size = UDim2.new(1, 0, 0, on and (28 + #opts * 24 + 6) or 28) })
+        tw(arrow, 0.22, { Rotation = on and 180 or 0 })
+    end
+    for i, opt in ipairs(opts) do
+        local b = create("TextButton", {
+            Text = "  " .. opt, Font = FONT, TextSize = 12, TextColor3 = Theme.Sub, AutoButtonColor = false,
+            BackgroundColor3 = Theme.Panel, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22),
+            TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = i, Parent = list,
+        })
+        corner(b, 4)
+        btns[opt] = b
+        b.MouseButton1Click:Connect(function()
+            if o.Multi then
+                local t, found = {}, false
+                for _, x in ipairs(el.value or {}) do if x == opt then found = true else t[#t + 1] = x end end
+                if not found then t[#t + 1] = opt end
+                el:Set(t)
+            else
+                el:Set(opt)
+                setOpen(false)
+            end
+        end)
+    end
+    head.MouseButton1Click:Connect(function() setOpen(not el.open) end)
+    hover(holder)
+    el:Set(F[o.Flag], true)
+    Lib.Elements[o.Flag] = el
+    return el
+end
+
+function Section:Button(o)
+    local b = create("TextButton", {
+        Text = o.Name, Font = FONT_M, TextSize = 13, TextColor3 = Theme.Text, AutoButtonColor = false,
+        Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = Theme.Elem, BorderSizePixel = 0,
+        LayoutOrder = self:_o(), Parent = self.frame,
+    })
+    corner(b, 5)
+    local st = stroke(b, Theme.Stroke)
+    hover(b)
+    b.MouseButton1Click:Connect(function()
+        tw(st, 0.08, { Color = Theme.Accent })
+        task.delay(0.2, function() tw(st, 0.3, { Color = Theme.Stroke }) end)
+        if o.Callback then task.spawn(o.Callback) end
+    end)
+    return b
+end
+
+function Section:Label(text)
+    local l = create("TextLabel", {
+        Text = text, Font = FONT, TextSize = 12, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, RichText = true, LayoutOrder = self:_o(), Parent = self.frame,
+    })
+    local el = {}
+    function el:Set(t) l.Text = t end
+    return el
+end
+
+function Section:Stat(name)
+    local f = create("Frame", { Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, LayoutOrder = self:_o(), Parent = self.frame })
+    create("TextLabel", {
+        Text = name, Font = FONT, TextSize = 12, TextColor3 = Theme.Sub, BackgroundTransparency = 1,
+        Size = UDim2.new(0.42, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = f,
+    })
+    local v = create("TextLabel", {
+        Text = "—", Font = FONT_M, TextSize = 12, TextColor3 = Theme.Text, BackgroundTransparency = 1,
+        Position = UDim2.fromScale(0.42, 0), Size = UDim2.new(0.58, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Right,
+        TextTruncate = Enum.TextTruncate.AtEnd, Parent = f,
+    })
+    local el = {}
+    function el:Set(t) v.Text = tostring(t) end
+    return el
+end
+
+function Section:Input(o)
+    local f = create("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = Theme.Elem, BorderSizePixel = 0, LayoutOrder = self:_o(), Parent = self.frame })
+    corner(f, 5)
+    create("TextLabel", {
+        Text = o.Name, Font = FONT, TextSize = 13, TextColor3 = Theme.Text, BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(10, 0), Size = UDim2.new(0.42, -10, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = f,
+    })
+    local box = create("TextBox", {
+        Text = tostring(F[o.Flag] or ""), PlaceholderText = o.Placeholder or "", Font = FONT, TextSize = 12,
+        TextColor3 = Theme.Accent, PlaceholderColor3 = Theme.Off, BackgroundColor3 = Theme.Panel, ClearTextOnFocus = false,
+        Position = UDim2.new(0.42, 0, 0.5, -10), Size = UDim2.new(0.58, -8, 0, 20), TextXAlignment = Enum.TextXAlignment.Left, Parent = f,
+    })
+    corner(box, 4)
+    pad(box, 6, 6, 0, 0)
+    local el = {}
+    function el:Set(v) box.Text = tostring(v) F[o.Flag] = tostring(v) end
+    function el:Get() return box.Text end
+    box.FocusLost:Connect(function()
+        F[o.Flag] = box.Text
+        if o.Callback then o.Callback(box.Text) end
+    end)
+    Lib.Elements[o.Flag] = el
+    return el
+end
+
+function Section:Keybind(o)
+    local f = create("Frame", { Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = Theme.Elem, BorderSizePixel = 0, LayoutOrder = self:_o(), Parent = self.frame })
+    corner(f, 5)
+    create("TextLabel", {
+        Text = o.Name, Font = FONT, TextSize = 13, TextColor3 = Theme.Text, BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -100, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = f,
+    })
+    local kb = create("TextButton", {
+        Text = "", Font = FONT_M, TextSize = 12, TextColor3 = Theme.Accent, AutoButtonColor = false, BackgroundColor3 = Theme.Panel,
+        Position = UDim2.new(1, -90, 0.5, -10), Size = UDim2.fromOffset(82, 20), Parent = f,
+    })
+    corner(kb, 4)
+    local el = { waiting = false }
+    function el:Set(v) F[o.Flag] = v kb.Text = tostring(v) end
+    function el:Get() return F[o.Flag] end
+    kb.MouseButton1Click:Connect(function()
+        el.waiting = true
+        Lib.Binding = true
+        kb.Text = "..."
+    end)
+    bind(UserInputService.InputBegan, function(i)
+        if el.waiting and i.UserInputType == Enum.UserInputType.Keyboard then
+            el.waiting = false
+            task.delay(0.1, function() Lib.Binding = false end)
+            if i.KeyCode == Enum.KeyCode.Escape then el:Set("None") else el:Set(i.KeyCode.Name) end
+        end
+    end)
+    el:Set(F[o.Flag])
+    Lib.Elements[o.Flag] = el
+    return el
+end
+
+local function setFlag(flag, v)
+    local e = Lib.Elements[flag]
+    if e then e:Set(v) else F[flag] = v end
+end
+
+---------------------------------------------------------------------------
+-- Funciones de soporte para la GUI
+---------------------------------------------------------------------------
+local function teleportTo(pos, surface)
+    local h = getHRP()
+    if not h or not pos then return end
+    local cf = surface and CFrame.new(pos.X, groundY(pos) + 3.2, pos.Z) or CFrame.new(pos)
+    Move.go(buildPath(h.Position, cf, "Abajo"), F.TweenSpeed * 1.4, "manual")
+    task.spawn(function()
+        local t0 = tick()
+        while Hub.Alive and Move.owner == "manual" and not Move.arrived and tick() - t0 < 25 do task.wait(0.1) end
+        if Move.owner == "manual" then Move.stop(false) end
+    end)
+end
+
+local function scanReport()
+    G.refresh()
+    local lines = {}
+    local function add(s) lines[#lines + 1] = s end
+    add("== TAUPE · escaneo de Dandy's World ==")
+    add("Sala actual: " .. (Cache.room and Cache.room:GetFullName() or "ninguna (lobby?)"))
+    add(("Máquinas: %d · Twisteds: %d · Ítems: %d"):format(#Cache.gens, #Cache.monsters, #Cache.items))
+    add("Elevador: " .. (Cache.elevator and Cache.elevator:GetFullName() or "no encontrado"))
+    local g = Cache.gens[1]
+    if g then
+        add("Ejemplo máquina: " .. g:GetFullName())
+        add("  Completed=" .. tostring(G.genDone(g)) .. "  Progress=" .. tostring(G.genProgress(g)) .. "  Prompt=" .. tostring(G.genPrompt(g) ~= nil))
+        local st = g:FindFirstChild("Stats")
+        if st then
+            for _, v in ipairs(st:GetChildren()) do
+                add("  Stats." .. v.Name .. " (" .. v.ClassName .. ")" .. (v:IsA("ValueBase") and (" = " .. tostring(v.Value)) or ""))
+            end
+        end
+    end
+    for _, m in ipairs(Cache.monsters) do add("Twisted: " .. m.Name .. (G.isRanged(m) and " [distancia]" or "")) end
+    for _, it in ipairs(Cache.items) do add("Ítem: " .. it.Name) end
+    local hp, mx = G.health(LP.Character)
+    local st, smx = G.stamina(LP)
+    add(("Tu vida: %s/%s · stamina: %s/%s"):format(tostring(hp), tostring(mx), tostring(st), tostring(smx)))
+    local inv = G.inventory()
+    local names = {}
+    for _, e in ipairs(inv) do names[#names + 1] = e.name .. (e.slot and ("#" .. e.slot) or "") end
+    add("Inventario: " .. (#names > 0 and table.concat(names, ", ") or "vacío / no detectado"))
+    SC.frame = nil
+    SC.scanT = 0
+    local f = scFindFrame()
+    add("Frame skill check: " .. (f and f:GetFullName() or "no encontrado (aparece al reparar)"))
+    if f then
+        local mk, ot, zs, pz = scParts(f)
+        add(("  marcadores=%d otros=%d zonas=%d perfectas=%d"):format(#mk, #ot, #zs, #pz))
+    end
+    add("Remote skill check aprendido: " .. (SC.learned and SC.learned.remote:GetFullName() or "no"))
+    local rem = {}
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) then
+            local n = lower(d.Name)
+            if n:find("skill") or n:find("buy") or n:find("purchase") or n:find("item") or n:find("gen") or n:find("abil") then rem[#rem + 1] = d.Name end
+        end
+    end
+    add("Remotes relevantes: " .. (#rem > 0 and table.concat(rem, ", ") or "ninguno"))
+    add("Executor: prompt=" .. tostring(X.fireprompt ~= nil) .. " touch=" .. tostring(X.firetouch ~= nil) .. " hook=" .. tostring(X.hookmm ~= nil) .. " VIM=" .. tostring(VIM ~= nil))
+    local text = table.concat(lines, "\n")
+    print(text)
+    return text
+end
+
+local CFG_DIR, CFG_FILE = "TaupeHub", "TaupeHub/DandysWorld.json"
+local function saveCfg(silent)
+    if not X.writefile then if not silent then notify("Config", "Tu executor no soporta writefile.", "bad") end return end
+    local ok = pcall(function()
+        if X.makefolder and not (X.isfolder and X.isfolder(CFG_DIR)) then X.makefolder(CFG_DIR) end
+        X.writefile(CFG_FILE, HttpService:JSONEncode(F))
+    end)
+    if not silent then notify("Config", ok and "Configuración guardada." or "No se pudo guardar.", ok and "good" or "bad") end
+end
+local function loadCfg(silent)
+    if not (X.readfile and X.isfile) then return false end
+    local ok, data = pcall(function()
+        if X.isfile(CFG_FILE) then return HttpService:JSONDecode(X.readfile(CFG_FILE)) end
+    end)
+    if ok and type(data) == "table" then
+        for k, v in pairs(data) do
+            if Lib.Elements[k] then pcall(function() Lib.Elements[k]:Set(v) end)
+            elseif F[k] ~= nil then F[k] = v end
+        end
+        if not silent then notify("Config", "Configuración cargada.", "good") end
+        return true
+    end
+    if not silent then notify("Config", "No hay configuración guardada.", "bad") end
+    return false
+end
+
+local function panic()
+    for _, k in ipairs({ "AutoFarm", "AutoHide", "AutoDistract", "Fly", "Noclip", "TPWalk", "SmartVeemote", "MasteryFarm", "AutoQueue", "AutoAbility" }) do
+        setFlag(k, false)
+    end
+    Move.stop(true)
+    farmReset()
+    notify("Pánico", "Toda la automatización fue desactivada.", "bad")
+end
+
+---------------------------------------------------------------------------
+-- Construcción de pestañas
+---------------------------------------------------------------------------
+local TFarm   = Lib:Tab("Autofarm")
+local TSurv   = Lib:Tab("Supervivencia")
+local TToon   = Lib:Tab("Toon / Maestría")
+local TVis    = Lib:Tab("Visual / ESP")
+local TAlert  = Lib:Tab("Alertas")
+local TPlayer = Lib:Tab("Jugador")
+local TMisc   = Lib:Tab("Misceláneo")
+local TCfg    = Lib:Tab("Config")
+
+-- AUTOFARM ----------------------------------------------------------------
+local sMain = TFarm:Section("Autopiloto")
+sMain:Toggle({ Name = "Autofarm", Flag = "AutoFarm", Desc = "Máquinas, ítems y elevador automático",
+    Callback = function(v)
+        if not v then Move.stop(true) farmReset() Farm.status = "Inactivo" end
+        notify("Autofarm", v and "Activado" or "Desactivado", v and "good" or nil, 2)
+    end })
+sMain:Dropdown({ Name = "Posición", Flag = "FarmPos", Options = { "Bajo el suelo", "Superficie" } })
+sMain:Slider({ Name = "Profundidad", Flag = "FarmDepth", Min = 3, Max = 14, Step = 0.5, Suffix = " st" })
+sMain:Dropdown({ Name = "Ruta", Flag = "FarmRoute", Options = { "Abajo", "Arriba", "Directo" } })
+sMain:Dropdown({ Name = "Prioridad", Flag = "FarmPriority", Options = { "Inteligente", "Cercanía", "Más progreso", "Menos peligro" } })
+sMain:Slider({ Name = "Velocidad tween", Flag = "TweenSpeed", Min = 10, Max = 120, Suffix = " st/s" })
+
+local sFarm2 = TFarm:Section("Comportamiento")
+sFarm2:Toggle({ Name = "Evadir twisteds", Flag = "FarmEvade", Desc = "Abandona máquinas con twisteds cerca" })
+sFarm2:Slider({ Name = "Radio de evasión", Flag = "EvadeRadius", Min = 8, Max = 60, Suffix = " st" })
+sFarm2:Toggle({ Name = "Saltar máquinas ocupadas", Flag = "SkipOccupied" })
+sFarm2:Toggle({ Name = "Recoger ítems", Flag = "FarmItems" })
+sFarm2:Slider({ Name = "Desvío máx. por ítem", Flag = "ItemDetour", Min = 0, Max = 120, Suffix = " st" })
+sFarm2:Toggle({ Name = "Ir al elevador al terminar", Flag = "FarmElevator" })
+sFarm2:Slider({ Name = "Timeout por máquina", Flag = "GenTimeout", Min = 30, Max = 300, Suffix = " s" })
+
+local sStatus = TFarm:Section("Estado", "right")
+local stState = sStatus:Stat("Estado")
+local stFloor = sStatus:Stat("Piso")
+local stGens  = sStatus:Stat("Máquinas")
+local stMons  = sStatus:Stat("Twisteds")
+local stNear  = sStatus:Stat("Más cercano")
+local stHP    = sStatus:Stat("Vida / Stamina")
+local stInv   = sStatus:Stat("Inventario")
+
+local sSC = TFarm:Section("Skill check", "right")
+sSC:Toggle({ Name = "Skill check automático", Flag = "AutoSkillCheck", Desc = "Siempre activo durante el autofarm" })
+sSC:Dropdown({ Name = "Modo", Flag = "SCMode", Options = { "Visual", "Remote (aprendido)" },
+    Callback = function(v)
+        if v == "Remote (aprendido)" then
+            if scInstallHook() then
+                notify("Skill check", "Haz un skill check correcto (visual) para que se aprenda el remote. Luego será instantáneo.")
+            else
+                notify("Skill check", "Tu executor no soporta hookmetamethod. Se usará el modo visual.", "bad")
+                setFlag("SCMode", "Visual")
+            end
+        end
+    end })
+sSC:Toggle({ Name = "Solo zona perfecta", Flag = "SCPerfect" })
+sSC:Slider({ Name = "Anticipación", Flag = "SCLead", Min = 0, Max = 0.15, Step = 0.005, Suffix = " s" })
+sSC:Dropdown({ Name = "Tecla", Flag = "SCKey", Options = { "Space", "E", "F", "Clic" } })
+sSC:Toggle({ Name = "Pulsar botón móvil", Flag = "SCButtons", Desc = "Activa botones dentro del frame (móvil)" })
+
+local sTp = TFarm:Section("Teletransportes rápidos", "right")
+sTp:Button({ Name = "Máquina incompleta más cercana", Callback = function()
+    local h = getHRP()
+    if not h then return end
+    local best, bd
+    for _, g in ipairs(Cache.gens) do
+        if not G.genDone(g) then
+            local p = posOf(g)
+            if p then local d = (p - h.Position).Magnitude if not bd or d < bd then best, bd = g, d end end
+        end
+    end
+    if best then
+        local cf = workCF(best)
+        if cf then
+            local p = cf.Position
+            if F.FarmPos == "Bajo el suelo" then p = p + Vector3.new(0, F.FarmDepth, 0) end
+            teleportTo(p, true)
+        end
+    else notify("TP", "No hay máquinas pendientes.") end
+end })
+sTp:Button({ Name = "Elevador", Callback = function()
+    if Cache.elevator then teleportTo(posOf(Cache.elevator), true) else notify("TP", "Elevador no encontrado.", "bad") end
+end })
+sTp:Button({ Name = "Ítem más cercano", Callback = function()
+    local it = nearestItem(nil)
+    if it then teleportTo(posOf(it), true) else notify("TP", "No hay ítems.") end
+end })
+
+-- SUPERVIVENCIA -----------------------------------------------------------
+local sHide = TSurv:Section("Auto-hide")
+sHide:Toggle({ Name = "Auto-hide", Flag = "AutoHide", Desc = "Se esconde con tween al acercarse un twisted" })
+sHide:Dropdown({ Name = "Modo", Flag = "HideMode", Options = { "Bajo el suelo", "Punto seguro", "Cielo" } })
+sHide:Slider({ Name = "Radio de peligro", Flag = "DangerRadius", Min = 8, Max = 70, Suffix = " st" })
+sHide:Slider({ Name = "Profundidad", Flag = "HideDepth", Min = 5, Max = 30, Suffix = " st" })
+
+local sHeal = TSurv:Section("Auto-heal")
+sHeal:Toggle({ Name = "Auto-heal", Flag = "AutoHeal", Desc = "Usa curaciones al recibir daño" })
+sHeal:Slider({ Name = "Curar por debajo de", Flag = "HealThreshold", Min = 10, Max = 100, Suffix = " %" })
+sHeal:Slider({ Name = "Retraso", Flag = "HealDelay", Min = 0, Max = 2, Step = 0.05, Suffix = " s" })
+sHeal:Dropdown({ Name = "Prioridad", Flag = "HealPriority", Options = { "Inteligente", "Bandage primero", "Healthkit primero" } })
+sHeal:Dropdown({ Name = "Uso de ítems", Flag = "ItemUse", Options = { "Tecla de slot", "Slot + clic" } })
+
+local sDis = TSurv:Section("Auto-distract", "right")
+sDis:Toggle({ Name = "Auto-distract", Flag = "AutoDistract", Desc = "Orbita sobre los twisteds para atraerlos" })
+sDis:Dropdown({ Name = "Activar", Flag = "DistractTrigger", Options = { "Aliado en peligro", "Siempre" } })
+sDis:Slider({ Name = "Altura", Flag = "DistractHeight", Min = 4, Max = 30, Suffix = " st" })
+sDis:Slider({ Name = "Radio de órbita", Flag = "DistractRadius", Min = 3, Max = 30, Suffix = " st" })
+sDis:Slider({ Name = "Velocidad de órbita", Flag = "DistractOrbit", Min = 0.3, Max = 5, Step = 0.1 })
+sDis:Label("Twisteds a distancia (Goob, Scraps…): órbita amplia con esquiva vertical.")
+sDis:Slider({ Name = "Radio (a distancia)", Flag = "DistractRadiusRanged", Min = 10, Max = 50, Suffix = " st" })
+sDis:Slider({ Name = "Altura (a distancia)", Flag = "DistractHeightRanged", Min = 2, Max = 30, Suffix = " st" })
+sDis:Input({ Name = "Nombres a distancia", Flag = "RangedNames", Placeholder = "goob, scraps" })
+
+local sVee = TSurv:Section("Smart Veemote", "right")
+sVee:Toggle({ Name = "Smart Veemote", Flag = "SmartVeemote", Desc = "Lo usa en la máquina más transitada por twisteds" })
+sVee:Dropdown({ Name = "Método", Flag = "VeemoteMode", Options = { "Apuntar cámara", "Ir bajo la máquina" } })
+sVee:Slider({ Name = "Calor mínimo", Flag = "VeemoteMinHeat", Min = 0, Max = 30 })
+sVee:Slider({ Name = "Radio de calor", Flag = "HeatRadius", Min = 10, Max = 80, Suffix = " st" })
+sVee:Slider({ Name = "Cooldown", Flag = "VeemoteCooldown", Min = 1, Max = 30, Suffix = " s" })
+
+local sAura = TSurv:Section("Ítems", "right")
+sAura:Toggle({ Name = "Item aura", Flag = "ItemAura", Desc = "Recoge ítems en el radio sin moverte" })
+sAura:Slider({ Name = "Radio", Flag = "AuraRadius", Min = 5, Max = 40, Suffix = " st" })
+
+local sBuy = TSurv:Section("Auto-buy")
+sBuy:Toggle({ Name = "Auto-buy", Flag = "AutoBuy", Desc = "Compra en la tienda de Dandy al abrirse" })
+sBuy:Dropdown({ Name = "Comprar", Flag = "BuyList", Options = ITEM_NAMES, Multi = true })
+sBuy:Slider({ Name = "Cantidad por visita", Flag = "BuyAmount", Min = 1, Max = 5 })
+sBuy:Toggle({ Name = "Compra por remote", Flag = "BuyRemote", Desc = "Experimental: dispara remotes de compra" })
+
+-- TOON / MAESTRÍA ---------------------------------------------------------
+local sAb = TToon:Section("Habilidad")
+sAb:Toggle({ Name = "Auto-habilidad", Flag = "AutoAbility" })
+sAb:Dropdown({ Name = "Tecla", Flag = "AbilityKey", Options = { "Q", "E", "R", "F", "Z", "X", "C" } })
+sAb:Dropdown({ Name = "Cuándo", Flag = "AbilityMode", Options = { "En peligro", "Al reparar", "Siempre" } })
+sAb:Slider({ Name = "Intervalo", Flag = "AbilityInterval", Min = 0.3, Max = 10, Step = 0.1, Suffix = " s" })
+
+local sMas = TToon:Section("Auto-maestría", "right")
+sMas:Toggle({ Name = "Mastery farm", Flag = "MasteryFarm", Desc = "Farm + habilidad + skill check + elevador",
+    Callback = function(v)
+        if v then
+            setFlag("AutoFarm", true)
+            setFlag("AutoSkillCheck", true)
+            setFlag("FarmElevator", true)
+            setFlag("AutoAbility", true)
+            setFlag("AbilityMode", "Siempre")
+            setFlag("AutoHeal", true)
+        else
+            setFlag("AutoFarm", false)
+            setFlag("AutoAbility", false)
+        end
+    end })
+sMas:Toggle({ Name = "Auto-entrar al elevador (lobby)", Flag = "AutoQueue", Desc = "Experimental" })
+sMas:Label("La maestría sube jugando pisos con el toon equipado: el modo encadena autofarm, habilidad y elevador sin parar.")
+
+-- VISUAL ------------------------------------------------------------------
+local sEsp = TVis:Section("ESP")
+sEsp:Toggle({ Name = "Twisteds", Flag = "ESPTwisted" })
+sEsp:Toggle({ Name = "Máquinas", Flag = "ESPGens" })
+sEsp:Toggle({ Name = "Ítems", Flag = "ESPItems" })
+sEsp:Toggle({ Name = "Jugadores", Flag = "ESPPlayers" })
+sEsp:Toggle({ Name = "Resaltado (Highlight)", Flag = "ESPHighlight" })
+sEsp:Toggle({ Name = "Mostrar distancia", Flag = "ESPDistance" })
+sEsp:Toggle({ Name = "Mostrar calor en máquinas", Flag = "ESPHeat" })
+sEsp:Slider({ Name = "Distancia máx.", Flag = "ESPMaxDist", Min = 50, Max = 3000, Suffix = " st" })
+
+local LightSave
+local function applyLighting()
+    if F.Fullbright or F.NoFog then
+        if not LightSave then
+            LightSave = {
+                Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime, FogEnd = Lighting.FogEnd,
+                FogStart = Lighting.FogStart, GlobalShadows = Lighting.GlobalShadows, Ambient = Lighting.Ambient,
+                OutdoorAmbient = Lighting.OutdoorAmbient, fx = {},
+            }
+        end
+        for _, e in ipairs(Lighting:GetDescendants()) do
+            if e:IsA("Atmosphere") then
+                if LightSave.fx[e] == nil then LightSave.fx[e] = e.Density end
+                e.Density = 0
+            elseif F.Fullbright and (e:IsA("ColorCorrectionEffect") or e:IsA("BlurEffect") or e:IsA("BloomEffect")) then
+                if LightSave.fx[e] == nil then LightSave.fx[e] = e.Enabled end
+                e.Enabled = false
+            end
+        end
+        if F.NoFog or F.Fullbright then Lighting.FogEnd = 1e6 Lighting.FogStart = 1e6 - 1 end
+        if F.Fullbright then
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.GlobalShadows = false
+            Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+            Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+        end
+    elseif LightSave then
+        for k, v in pairs(LightSave) do if k ~= "fx" then pcall(function() Lighting[k] = v end) end end
+        for e, v in pairs(LightSave.fx) do
+            pcall(function()
+                if e:IsA("Atmosphere") then e.Density = v else e.Enabled = v end
+            end)
+        end
+        LightSave = nil
+    end
+end
+
+local sLight = TVis:Section("Iluminación", "right")
+sLight:Toggle({ Name = "Fullbright", Flag = "Fullbright", Desc = "Elimina oscuridad y blackouts", Callback = function() applyLighting() end })
+sLight:Toggle({ Name = "Sin niebla", Flag = "NoFog", Callback = function() applyLighting() end })
+sLight:Toggle({ Name = "FOV personalizado", Flag = "FOVOn" })
+sLight:Slider({ Name = "FOV", Flag = "FOV", Min = 50, Max = 120 })
+
+-- ALERTAS -----------------------------------------------------------------
+local sN1 = TAlert:Section("Mundo")
+sN1:Toggle({ Name = "Cambio de piso", Flag = "NotifyFloor" })
+sN1:Toggle({ Name = "Twisteds del piso", Flag = "NotifyTwisted", Desc = "Marca principales y de ataque a distancia" })
+sN1:Toggle({ Name = "Ítems raros", Flag = "NotifyItems" })
+sN1:Dropdown({ Name = "Ítems a avisar", Flag = "RareItems", Options = ITEM_NAMES, Multi = true })
+
+local sN2 = TAlert:Section("Equipo", "right")
+sN2:Toggle({ Name = "Aliado golpeado", Flag = "NotifyAllyHurt" })
+sN2:Toggle({ Name = "Aliado con stamina baja", Flag = "NotifyAllyStamina" })
+sN2:Slider({ Name = "Umbral de stamina", Flag = "StaminaThreshold", Min = 5, Max = 80, Suffix = " %" })
+sN2:Toggle({ Name = "Avisar cuando te golpean", Flag = "NotifySelfHurt" })
+sN2:Button({ Name = "Probar notificación", Callback = function() notify("TAUPE", "Las notificaciones funcionan.", "good") end })
+
+-- JUGADOR -----------------------------------------------------------------
+local sMv = TPlayer:Section("Movimiento")
+sMv:Toggle({ Name = "WalkSpeed fijo", Flag = "WalkSpeedOn" })
+sMv:Slider({ Name = "WalkSpeed", Flag = "WalkSpeed", Min = 8, Max = 80 })
+sMv:Toggle({ Name = "Speed boost", Flag = "SpeedBoost", Desc = "Multiplica la velocidad que da el juego" })
+sMv:Slider({ Name = "Multiplicador", Flag = "SpeedMult", Min = 1, Max = 3, Step = 0.05, Suffix = "x" })
+sMv:Toggle({ Name = "TP walk", Flag = "TPWalk" })
+sMv:Slider({ Name = "Velocidad TP walk", Flag = "TPWalkSpeed", Min = 2, Max = 80, Suffix = " st/s" })
+
+local sMv2 = TPlayer:Section("Físicas", "right")
+sMv2:Toggle({ Name = "Noclip", Flag = "Noclip", Desc = "Por Stepped, restaura colisiones al apagar" })
+sMv2:Toggle({ Name = "Fly", Flag = "Fly", Desc = "WASD + Espacio / Ctrl" })
+sMv2:Slider({ Name = "Velocidad de vuelo", Flag = "FlySpeed", Min = 10, Max = 150, Suffix = " st/s" })
+sMv2:Toggle({ Name = "Stamina infinita", Flag = "InfStamina", Desc = "Experimental (lado cliente)" })
+sMv2:Toggle({ Name = "Ctrl + clic TP", Flag = "ClickTP" })
+
+local sDeath = TPlayer:Section("Personaje", "right")
+sDeath:Button({ Name = "Muerte instantánea", Callback = function()
+    local hum = getHum()
+    if hum then hum.Health = 0 end
+    local c = getChar()
+    if c then pcall(function() c:BreakJoints() end) end
+end })
+
+-- MISC --------------------------------------------------------------------
+local sM1 = TMisc:Section("Utilidades")
+sM1:Toggle({ Name = "Anti-AFK", Flag = "AntiAFK" })
+sM1:Button({ Name = "Rejoin", Callback = function() TeleportService:Teleport(game.PlaceId, LP) end })
+sM1:Button({ Name = "Server hop", Callback = function()
+    local ok, res = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)))
+    end)
+    if ok and res and res.data then
+        for _, s in ipairs(res.data) do
+            if s.id ~= game.JobId and s.playing < s.maxPlayers then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, LP)
+                return
+            end
+        end
+    end
+    notify("Server hop", "No se encontró otro servidor.", "bad")
+end })
+sM1:Button({ Name = "Detener movimiento", Callback = function() Move.stop(true) farmReset() end })
+
+local sM2 = TMisc:Section("Teclas", "right")
+sM2:Keybind({ Name = "Mostrar / ocultar", Flag = "ToggleKey" })
+sM2:Keybind({ Name = "Pánico", Flag = "PanicKey" })
+
+-- CONFIG ------------------------------------------------------------------
+local sC1 = TCfg:Section("Configuración")
+sC1:Button({ Name = "Guardar", Callback = function() saveCfg(false) end })
+sC1:Button({ Name = "Cargar", Callback = function() loadCfg(false) end })
+sC1:Toggle({ Name = "Cargar al iniciar", Flag = "AutoLoad", Callback = function() saveCfg(true) end })
+sC1:Toggle({ Name = "Modo debug (consola)", Flag = "Debug" })
+
+local sC2 = TCfg:Section("Diagnóstico", "right")
+sC2:Button({ Name = "Escanear juego", Callback = function()
+    local t = scanReport()
+    notify("Escaneo", "Reporte impreso en la consola (F9).", "good")
+    return t
+end })
+sC2:Button({ Name = "Copiar reporte", Callback = function()
+    local t = scanReport()
+    if X.setclipboard then X.setclipboard(t) notify("Escaneo", "Reporte copiado al portapapeles.", "good")
+    else notify("Escaneo", "Tu executor no soporta setclipboard.", "bad") end
+end })
+sC2:Button({ Name = "Descargar script", Callback = function() Hub.Unload() end })
+sC2:Label("TAUPE detecta la estructura del juego por nombre. Si una actualización rompe algo, el escaneo te dirá qué no encuentra.")
+
+---------------------------------------------------------------------------
+-- ESP
+---------------------------------------------------------------------------
+local ESP = { map = {}, tick = 0 }
+
+local function espSet(inst, color, text, highlight)
+    local e = ESP.map[inst]
+    if not e then
+        local adorn = partOf(inst)
+        if not adorn then return end
+        local bb = create("BillboardGui", {
+            Adornee = adorn, Size = UDim2.fromOffset(220, 34), StudsOffset = Vector3.new(0, 3.2, 0),
+            AlwaysOnTop = true, LightInfluence = 0, ResetOnSpawn = false, Parent = EspFolder,
+        })
+        local tl = create("TextLabel", {
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Font = FONT_M, TextSize = 12,
+            TextStrokeTransparency = 0.45, TextStrokeColor3 = Color3.new(0, 0, 0), Text = "", Parent = bb,
+        })
+        e = { bb = bb, tl = tl }
+        ESP.map[inst] = e
+    end
+    e.seen = ESP.tick
+    e.tl.Text = text
+    e.tl.TextColor3 = color
+    if highlight and F.ESPHighlight then
+        if not e.hl then
+            e.hl = create("Highlight", {
+                Adornee = inst, FillTransparency = 0.78, OutlineTransparency = 0.15,
+                DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, Parent = EspFolder,
+            })
+        end
+        e.hl.FillColor = color
+        e.hl.OutlineColor = color
+    elseif e.hl then
+        e.hl:Destroy()
+        e.hl = nil
+    end
+end
+
+local function distTxt(p, myPos)
+    if not F.ESPDistance or not myPos or not p then return "" end
+    return ("  ·  %d st"):format(floor((p - myPos).Magnitude))
+end
+
+local function espTick()
+    ESP.tick = ESP.tick + 1
+    local h = getHRP()
+    local myPos = h and h.Position
+    local function inRange(p) return p and (not myPos or (p - myPos).Magnitude <= F.ESPMaxDist) end
+    if F.ESPTwisted then
+        for _, m in ipairs(Cache.monsters) do
+            local p = posOf(m)
+            if inRange(p) then
+                local tag = G.isMain(m) and " ★" or ""
+                if G.isRanged(m) then tag = tag .. " ⟶" end
+                espSet(m, Theme.EspMon, G.twName(m) .. tag .. distTxt(p, myPos), true)
+            end
+        end
+    end
+    if F.ESPGens then
+        for _, g in ipairs(Cache.gens) do
+            local p = posOf(g)
+            if inRange(p) then
+                local done = G.genDone(g)
+                local prog = G.genProgress(g)
+                local txt
+                if done then txt = "Máquina ✓"
+                else
+                    txt = "Máquina " .. (prog and (floor(prog) .. "%") or "")
+                    if F.ESPHeat and (Heat[g] or 0) >= 1 then txt = txt .. ("  calor %d"):format(floor(Heat[g])) end
+                end
+                espSet(g, done and Theme.EspDone or Theme.EspGen, txt .. distTxt(p, myPos), true)
+            end
+        end
+    end
+    if F.ESPItems then
+        for _, it in ipairs(Cache.items) do
+            local p = posOf(it)
+            if inRange(p) then
+                local rare = hasAny(it.Name, F.RareItems or {})
+                espSet(it, rare and Theme.EspRare or Theme.EspItem, it.Name .. distTxt(p, myPos), false)
+            end
+        end
+    end
+    if F.ESPPlayers then
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= LP and pl.Character then
+                local p = posOf(pl.Character)
+                if inRange(p) then
+                    local hp, mx = G.health(pl.Character)
+                    local st, smx = G.stamina(pl)
+                    local txt = pl.DisplayName
+                    if hp then txt = txt .. ("  ♥ %s/%s"):format(floor(hp + 0.5), floor(mx + 0.5)) end
+                    if st then txt = txt .. ("  ϟ %d%%"):format(floor(st / smx * 100)) end
+                    espSet(pl.Character, Theme.EspPlayer, txt .. distTxt(p, myPos), true)
+                end
+            end
+        end
+    end
+    for inst, e in pairs(ESP.map) do
+        if e.seen ~= ESP.tick or not inst.Parent then
+            pcall(function() e.bb:Destroy() end)
+            if e.hl then pcall(function() e.hl:Destroy() end) end
+            ESP.map[inst] = nil
+        end
+    end
+end
+
+---------------------------------------------------------------------------
+-- Alertas
+---------------------------------------------------------------------------
+local Alert = { room = nil, seenMon = {}, seenItem = {}, ally = {}, floor = 0, selfHp = nil }
+
+local function alertTick()
+    if Cache.room ~= Alert.room then
+        Alert.room = Cache.room
+        Alert.seenMon, Alert.seenItem = {}, {}
+        Heat = {}
+        Farm.blacklist, Farm.itemBL = {}, {}
+        if Cache.room then
+            Alert.roomGrace = F.NotifyFloor and (tick() + 4) or 0
+            Alert.floor = G.floorNumber() or (Alert.floor + 1)
+            if F.NotifyFloor then
+                local fl = Alert.floor
+                task.delay(2.5, function()
+                    local names = {}
+                    for _, m in ipairs(Cache.monsters) do names[#names + 1] = G.twName(m) end
+                    notify(("Piso %d"):format(fl), ("%d máquinas · %d ítems · %d twisteds%s"):format(
+                        #Cache.gens, #Cache.items, #Cache.monsters, #names > 0 and ("\n" .. table.concat(names, ", ")) or ""), nil, 6)
+                end)
+            end
+        end
+    end
+    if Cache.room then
+        local new, anyMain = {}, false
+        for _, m in ipairs(Cache.monsters) do
+            if not Alert.seenMon[m] then
+                Alert.seenMon[m] = true
+                if tick() > (Alert.roomGrace or 0) then
+                    new[#new + 1] = G.twName(m) .. (G.isRanged(m) and " (distancia)" or "")
+                    if G.isMain(m) then anyMain = true end
+                end
+            end
+        end
+        if F.NotifyTwisted and #new > 0 then
+            notify(anyMain and "Twisted principal" or "Twisted", table.concat(new, ", "), anyMain and "bad" or nil)
+        end
+        for _, it in ipairs(Cache.items) do
+            if not Alert.seenItem[it] then
+                Alert.seenItem[it] = true
+                if F.NotifyItems and hasAny(it.Name, F.RareItems or {}) then notify("Ítem raro", it.Name, "good") end
+            end
+        end
+    end
+    -- equipo
+    local now = tick()
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LP and pl.Character then
+            local a = Alert.ally[pl] or {}
+            Alert.ally[pl] = a
+            local hp, mx = G.health(pl.Character)
+            if hp then
+                if a.hp and hp < a.hp - 0.01 and hp > 0 and F.NotifyAllyHurt then
+                    notify("Aliado golpeado", ("%s · %s/%s"):format(pl.DisplayName, floor(hp + 0.5), floor(mx + 0.5)), "bad")
+                end
+                a.hp = hp
+            end
+            local st, smx = G.stamina(pl)
+            if st and F.NotifyAllyStamina then
+                local pct = st / smx * 100
+                if pct <= F.StaminaThreshold and (not a.lowT or now - a.lowT > 20) then
+                    a.lowT = now
+                    notify("Stamina baja", ("%s · %d%%"):format(pl.DisplayName, floor(pct)))
+                end
+            end
+        end
+    end
+    for pl in pairs(Alert.ally) do if not pl.Parent then Alert.ally[pl] = nil end end
+end
+
+---------------------------------------------------------------------------
+-- Auto-heal / Veemote / Ability / Buy / Aura / Queue
+---------------------------------------------------------------------------
+local Heal = { last = nil, pending = nil, lastUse = 0 }
+local HEAL_SMALL = { "bandage" }
+local HEAL_BIG = { "healthkit", "medkit", "firstaid", "health" }
+
+local function healTick()
+    local hp, mx = G.health(LP.Character)
+    if not hp then Heal.last = nil return end
+    if Heal.last and hp < Heal.last - 0.01 and hp > 0 then
+        if F.NotifySelfHurt then notify("Te golpearon", ("Vida: %s/%s"):format(floor(hp + 0.5), floor(mx + 0.5)), "bad", 3) end
+        Heal.pending = tick() + F.HealDelay
+    end
+    Heal.last = hp
+    if not F.AutoHeal or not Heal.pending or tick() < Heal.pending or tick() - Heal.lastUse < 1.2 then return end
+    Heal.pending = nil
+    if hp <= 0 or hp >= mx or (hp / mx * 100) > F.HealThreshold then return end
+    local small, big = G.findItem(HEAL_SMALL), G.findItem(HEAL_BIG)
+    local item
+    if F.HealPriority == "Bandage primero" then item = small or big
+    elseif F.HealPriority == "Healthkit primero" then item = big or small
+    else
+        local missing = mx - hp
+        if missing >= mx * 0.5 then item = big or small else item = small or big end
+    end
+    item = item or G.findItem({ "heal", "chocolate" })
+    if item and G.useItem(item) then
+        Heal.lastUse = tick()
+        notify("Auto-heal", "Usado: " .. item.name, "good", 3)
+    end
+end
+
+local function heatTick()
+    for _, g in ipairs(Cache.gens) do
+        local gp = posOf(g)
+        local n = 0
+        if gp then
+            for _, m in ipairs(Cache.monsters) do
+                local mp = posOf(m)
+                if mp and (mp - gp).Magnitude < F.HeatRadius then n = n + 1 end
+            end
+        end
+        Heat[g] = (Heat[g] or 0) * 0.985 + n * 0.5
+    end
+    if not F.SmartVeemote or Vee.busy or tick() - Vee.last < F.VeemoteCooldown then return end
+    local item = G.findItem({ "veemote" })
+    if not item then return end
+    local best, bh
+    for _, g in ipairs(Cache.gens) do
+        if not G.genDone(g) and (Heat[g] or 0) >= F.VeemoteMinHeat and (not bh or Heat[g] > bh) then best, bh = g, Heat[g] end
+    end
+    if not best then return end
+    Vee.last = tick()
+    Vee.busy = true
+    task.spawn(function()
+        local gp = posOf(best)
+        if F.VeemoteMode == "Ir bajo la máquina" then
+            local h = getHRP()
+            local cf = workCF(best)
+            if h and cf then
+                local under = CFrame.new(cf.Position.X, groundY(cf.Position) + 3.2 - math.max(F.FarmDepth, 7), cf.Position.Z)
+                Move.go(buildPath(h.Position, under, "Abajo"), F.TweenSpeed * 1.4, "veemote")
+                local t0 = tick()
+                while Hub.Alive and not Move.arrived and tick() - t0 < 6 do task.wait(0.05) end
+            end
+        end
+        local cam = workspace.CurrentCamera
+        if gp then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, gp) end
+        G.useItem(item)
+        notify("Smart Veemote", ("Usado en la máquina con calor %d"):format(floor(bh)), "good")
+        task.wait(0.4)
+        if Move.owner == "veemote" then Move.stop(not F.AutoFarm) end
+        Vee.busy = false
+    end)
+end
+
+local Ability = { last = 0 }
+local function abilityTick()
+    if not (F.AutoAbility or F.MasteryFarm) then return end
+    if tick() - Ability.last < F.AbilityInterval then return end
+    local hum = getHum()
+    if not hum or hum.Health <= 0 then return end
+    local go = false
+    if F.AbilityMode == "Siempre" then go = Cache.room ~= nil
+    elseif F.AbilityMode == "Al reparar" then go = Farm.phase == "work"
+    else
+        local h = getHRP()
+        local _, d = G.nearestMonster(h and h.Position)
+        go = d ~= nil and d < F.DangerRadius
+    end
+    if go then
+        Ability.last = tick()
+        pressKey(keyFromName(F.AbilityKey))
+    end
+end
+
+local Buy = { counts = {}, wasOpen = false, lastT = 0 }
+local CONFIRM_K = { "buy", "purchase", "comprar", "confirm" }
+local function findShop()
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    if not pg then return nil end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("GuiObject") and lower(d.Name):find("shop") and isShown(d) then return d end
+    end
+    return nil
+end
+local function btnMatches(b, item)
+    if hasAny(b.Name, { item }) then return true end
+    if b:IsA("TextButton") and hasAny(b.Text, { item }) then return true end
+    for _, d in ipairs(b:GetDescendants()) do
+        if d:IsA("TextLabel") and hasAny(d.Text, { item }) then return true end
+    end
+    local p = b.Parent
+    if p and p:IsA("GuiObject") then
+        if hasAny(p.Name, { item }) then return true end
+        for _, d in ipairs(p:GetChildren()) do
+            if d:IsA("TextLabel") and hasAny(d.Text, { item }) then return true end
+        end
+    end
+    return false
+end
+local function buyTick()
+    if not F.AutoBuy then return end
+    if tick() - Buy.lastT < 0.6 then return end
+    local shop = findShop()
+    if not shop then Buy.wasOpen = false return end
+    if not Buy.wasOpen then Buy.counts = {} Buy.wasOpen = true end
+    Buy.lastT = tick()
+    for _, item in ipairs(F.BuyList or {}) do
+        if (Buy.counts[item] or 0) < F.BuyAmount then
+            if F.BuyRemote then
+                for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+                    if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+                        local n = lower(d.Name)
+                        if n:find("buy") or n:find("purchase") then
+                            pcall(function()
+                                if d:IsA("RemoteEvent") then d:FireServer(item) else d:InvokeServer(item) end
+                            end)
+                        end
+                    end
+                end
+                Buy.counts[item] = (Buy.counts[item] or 0) + 1
+                return
+            end
+            for _, b in ipairs(shop:GetDescendants()) do
+                if b:IsA("GuiButton") and isShown(b) and btnMatches(b, item) then
+                    clickGui(b)
+                    task.delay(0.15, function()
+                        for _, c in ipairs(shop:GetDescendants()) do
+                            if c:IsA("GuiButton") and isShown(c) and (hasAny(c.Name, CONFIRM_K) or (c:IsA("TextButton") and hasAny(c.Text, CONFIRM_K))) then
+                                clickGui(c)
+                                break
+                            end
+                        end
+                    end)
+                    Buy.counts[item] = (Buy.counts[item] or 0) + 1
+                    notify("Auto-buy", "Comprando: " .. item, "good", 2.5)
+                    return
+                end
+            end
+        end
+    end
+end
+
+local Aura = { cd = {} }
+local function auraTick()
+    if not F.ItemAura then return end
+    local h = getHRP()
+    if not h then return end
+    for _, it in ipairs(Cache.items) do
+        local p = posOf(it)
+        if p and (p - h.Position).Magnitude <= F.AuraRadius and (Aura.cd[it] or 0) < tick() then
+            Aura.cd[it] = tick() + 1.5
+            collectItem(it)
+        end
+    end
+end
+
+local Queue = { lastT = 0 }
+local function queueTick()
+    if not F.AutoQueue or Cache.room then return end
+    if tick() - Queue.lastT < 15 or Move.active then return end
+    local h = getHRP()
+    if not h then return end
+    Queue.lastT = tick()
+    local best, bd
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("BasePart") then
+            local n = lower(d.Name)
+            local pn = d.Parent and lower(d.Parent.Name) or ""
+            if (pn:find("elevator") or n:find("elevator")) and (n:find("zone") or n:find("inside") or n:find("hitbox") or n:find("enter") or n:find("trigger")) then
+                local dd = (d.Position - h.Position).Magnitude
+                if not bd or dd < bd then best, bd = d, dd end
+            end
+        end
+    end
+    if best then
+        notify("Auto-queue", "Entrando al elevador…")
+        teleportTo(best.Position, true)
+    end
+end
+
+---------------------------------------------------------------------------
+-- Bucles de física (Heartbeat / Stepped / RenderStepped)
+---------------------------------------------------------------------------
+local NC = { saved = {}, on = false }
+bind(RunService.Stepped, function()
+    local want = F.Noclip or F.Fly or Move.active
+    local ch = LP.Character
+    if want and ch then
+        for _, p in ipairs(ch:GetDescendants()) do
+            if p:IsA("BasePart") and p.CanCollide then
+                NC.saved[p] = true
+                p.CanCollide = false
+            end
+        end
+        NC.on = true
+    elseif NC.on then
+        for p in pairs(NC.saved) do if p.Parent then p.CanCollide = true end end
+        NC.saved = {}
+        NC.on = false
+    end
+end)
+
+local SB = { base = nil, lastSet = nil }
+bind(RunService.Heartbeat, function(dt)
+    local h, hum = getHRP(), getHum()
+    if not h or not hum then return end
+
+    -- Movimiento automatizado
+    if Move.active and Move.path then
+        local goal = Move.path[Move.i]
+        if goal then
+            local cur = h.Position
+            local gp = goal.Position
+            local delta = gp - cur
+            local dist = delta.Magnitude
+            local step = Move.speed * dt
+            local newPos
+            if dist <= step or dist < 0.05 then
+                newPos = gp
+                if Move.i < #Move.path then Move.i = Move.i + 1 else Move.arrived = true end
+            else
+                newPos = cur + delta.Unit * step
+            end
+            h.CFrame = CFrame.new(newPos) * (goal - goal.Position)
+            h.AssemblyLinearVelocity = Vector3.zero
+            h.AssemblyAngularVelocity = Vector3.zero
+        end
+        return
+    end
+
+    -- Fly
+    if F.Fly then
+        local cam = workspace.CurrentCamera
+        local dir = Vector3.zero
+        if UserInputService:GetFocusedTextBox() == nil then
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.yAxis end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.yAxis end
+        end
+        if dir.Magnitude < 0.01 and hum.MoveDirection.Magnitude > 0 then dir = hum.MoveDirection end
+        if dir.Magnitude > 0 then dir = dir.Unit end
+        local look = cam.CFrame.LookVector
+        local flat = Vector3.new(look.X, 0, look.Z)
+        local pos = h.Position + dir * F.FlySpeed * dt
+        h.CFrame = flat.Magnitude > 0.01 and CFrame.lookAt(pos, pos + flat) or CFrame.new(pos)
+        h.AssemblyLinearVelocity = Vector3.zero
+        return
+    end
+
+    -- TP walk
+    if F.TPWalk and hum.MoveDirection.Magnitude > 0 then
+        h.CFrame = h.CFrame + hum.MoveDirection * F.TPWalkSpeed * dt
+    end
+
+    -- WalkSpeed / Speed boost
+    if F.WalkSpeedOn then
+        if hum.WalkSpeed ~= F.WalkSpeed then hum.WalkSpeed = F.WalkSpeed end
+        SB.lastSet = nil
+    elseif F.SpeedBoost then
+        local ws = hum.WalkSpeed
+        if not SB.lastSet or abs(ws - SB.lastSet) > 0.01 then SB.base = ws end
+        SB.lastSet = (SB.base or ws) * F.SpeedMult
+        hum.WalkSpeed = SB.lastSet
+    elseif SB.lastSet then
+        if SB.base then hum.WalkSpeed = SB.base end
+        SB.lastSet, SB.base = nil, nil
+    end
+
+    -- Stamina infinita (cliente)
+    if F.InfStamina then
+        local c = LP.Character
+        for _, root in ipairs({ c, c and c:FindFirstChild("Stats"), LP, LP:FindFirstChild("Stats") }) do
+            if root then
+                local mx = root:GetAttribute("MaxStamina")
+                if root:GetAttribute("Stamina") ~= nil then root:SetAttribute("Stamina", mx or 100) end
+                local v = root:FindFirstChild("Stamina")
+                if v and v:IsA("ValueBase") then
+                    local mv = root:FindFirstChild("MaxStamina")
+                    pcall(function() v.Value = (mv and mv.Value) or mx or 100 end)
+                end
+            end
+        end
+    end
+end)
+
+bind(RunService.RenderStepped, function(dt)
+    if F.FOVOn then workspace.CurrentCamera.FieldOfView = F.FOV end
+    local ok, err = pcall(scStep, dt)
+    if not ok and F.Debug then warn("[TAUPE] skillcheck:", err) end
+end)
+
+---------------------------------------------------------------------------
+-- Entrada (teclas)
+---------------------------------------------------------------------------
+bind(UserInputService.InputBegan, function(i, gp)
+    if Lib.Binding then return end
+    if i.UserInputType == Enum.UserInputType.Keyboard then
+        if i.KeyCode.Name == F.ToggleKey and not gp then
+            Main.Visible = not Main.Visible
+        elseif i.KeyCode.Name == F.PanicKey and not gp then
+            panic()
+        end
+    elseif i.UserInputType == Enum.UserInputType.MouseButton1 and F.ClickTP and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        local h = getHRP()
+        local m = LP:GetMouse()
+        if h and m.Hit then h.CFrame = CFrame.new(m.Hit.Position + Vector3.new(0, 3.2, 0)) end
+    end
+end)
+
+bind(LP.Idled, function()
+    if F.AntiAFK then
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end
+end)
+
+bind(LP.CharacterAdded, function()
+    Move.stop(false)
+    farmReset()
+    Hide.target, Hide.origin, Hide.returning = nil, nil, false
+    Heal.last = nil
+    NC.saved, NC.on = {}, false
+    SB.base, SB.lastSet = nil, nil
+end)
+
+-- Botón flotante para móvil
+if UserInputService.TouchEnabled then
+    local mb = create("TextButton", {
+        Text = "T", Font = FONT_B, TextSize = 16, TextColor3 = Theme.Accent, AutoButtonColor = false,
+        BackgroundColor3 = Theme.Panel, Size = UDim2.fromOffset(40, 40), Position = UDim2.new(0, 14, 0.4, 0), Parent = Gui,
+    })
+    corner(mb, 8)
+    stroke(mb)
+    local dragging, moved, sp, si = false, false, nil, nil
+    mb.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging, moved, sp, si = true, false, mb.Position, i.Position
+        end
+    end)
+    bind(UserInputService.InputChanged, function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
+            local d = i.Position - si
+            if d.Magnitude > 6 then moved = true end
+            mb.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+        end
+    end)
+    mb.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+            if not moved then Main.Visible = not Main.Visible end
+        end
+    end)
+end
+
+---------------------------------------------------------------------------
+-- Bucles lógicos
+---------------------------------------------------------------------------
+local function loop(interval, name, fn)
+    task.spawn(function()
+        while Hub.Alive do
+            local ok, err = pcall(fn)
+            if not ok and F.Debug then warn("[TAUPE] " .. name .. ":", err) end
+            task.wait(interval)
+        end
+    end)
+end
+
+loop(0.35, "cache", G.refresh)
+loop(0.15, "esp", espTick)
+loop(0.5, "alert", alertTick)
+loop(0.15, "heal", healTick)
+loop(0.5, "heat", heatTick)
+loop(0.25, "ability", abilityTick)
+loop(0.2, "buy", buyTick)
+loop(0.25, "aura", auraTick)
+loop(1, "queue", queueTick)
+loop(0.5, "light", function() if F.Fullbright or F.NoFog or LightSave then applyLighting() end end)
+
+do
+    local last = tick()
+    loop(0.05, "brain", function()
+        local now = tick()
+        local dt = now - last
+        last = now
+        brainTick(dt)
+    end)
+end
+
+loop(0.4, "status", function()
+    local h = getHRP()
+    local done = 0
+    for _, g in ipairs(Cache.gens) do if G.genDone(g) then done = done + 1 end end
+    local state = F.AutoFarm and Farm.status
+        or (Hide.target and "Escondido")
+        or (Move.owner == "distract" and "Distrayendo")
+        or "Inactivo"
+    stState:Set(state)
+    stFloor:Set(Cache.room and tostring(Alert.floor) or "Lobby")
+    stGens:Set(#Cache.gens > 0 and ("%d / %d"):format(done, #Cache.gens) or "—")
+    stMons:Set(#Cache.monsters)
+    local m, d = G.nearestMonster(h and h.Position)
+    stNear:Set(m and ("%s · %d st"):format(G.twName(m), floor(d)) or "—")
+    local hp, mx = G.health(LP.Character)
+    local st, smx = G.stamina(LP)
+    stHP:Set(("%s  ·  %s"):format(hp and (floor(hp + 0.5) .. "/" .. floor(mx + 0.5)) or "?", st and (floor(st / smx * 100) .. "%") or "?"))
+    local names = {}
+    for _, e in ipairs(G.inventory()) do names[#names + 1] = e.name end
+    stInv:Set(#names > 0 and table.concat(names, ", ") or "vacío")
+    TopStatus.Text = state .. (Cache.room and ("  ·  piso " .. Alert.floor) or "")
+end)
+
+---------------------------------------------------------------------------
+-- Descarga
+---------------------------------------------------------------------------
+function Hub.Unload()
+    if not Hub.Alive then return end
+    Hub.Alive = false
+    Move.stop(true)
+    for _, c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
+    for p in pairs(NC.saved) do pcall(function() if p.Parent then p.CanCollide = true end end) end
+    F.Fullbright, F.NoFog = false, false
+    pcall(applyLighting)
+    if SC.hooked and SC.oldNC and X.hookmm then pcall(function() X.hookmm(game, "__namecall", SC.oldNC) end) end
+    pcall(function() Gui:Destroy() end)
+    pcall(function() EspFolder:Destroy() end)
+    if ENV.TaupeHub == Hub then ENV.TaupeHub = nil end
+end
+
+---------------------------------------------------------------------------
+-- Inicio
+---------------------------------------------------------------------------
+if F.AutoLoad then
+    local had = loadCfg(true)
+    if had and F.SCMode == "Remote (aprendido)" then scInstallHook() end
+end
+Main.Size = UDim2.fromOffset(640, 0)
+tw(Main, 0.35, { Size = UDim2.fromOffset(640, 430) })
+notify("TAUPE cargado", ("v%s · %s para ocultar · %s = pánico"):format(VERSION, F.ToggleKey, F.PanicKey), "good", 6)
